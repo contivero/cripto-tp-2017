@@ -1,10 +1,10 @@
 Simple implementation of a secret image sharing scheme, as discribed in
-[Kuang-Shyr Wu1, Tsung-Ming Lo. An Efficient Secret Image Sharing Scheme. Applied Mechanics and Materials Vols. 284-287 (2013) pp 3025-3029]
+[Kuang-Shyr Wu, Tsung-Ming Lo. An Efficient Secret Image Sharing Scheme. Applied Mechanics and Materials Vols. 284-287 (2013) pp 3025-3029]
 
 The program hides 8-bit BMP images inside others. The 40 byte BITMAPINFOHEADER
 format is assumed.
 
-To build simply use `make`, the different flags can be found in config.mk
+To build simply use `make`, the different flags can be found in `config.mk`
 
 usage:
 
@@ -24,3 +24,6 @@ bmpsss (-d|-r) -secret <image> -k <number> -w <width> -h <height> [-s <seed>] [-
 -dir <directory>    directory in which to search for the images. If not
                     specified, use the current directory.
 ```
+
+The paper was given to be used for the implementation project of the 2017
+Cryptography and Security course at ITBA.

@@ -1,5 +1,6 @@
 #include "util.h"
 #include <math.h>
+#include <limits.h>
 #include <string.h>
 
 #define BMP_MAGIC_NUMBER       0x424D
@@ -17,48 +18,47 @@
 #define RIGHTMOST_BIT_OFF(x)   ((x) &= 0xFE)
 
 typedef struct {
-	uint8_t  id[2];    /* magic number to identify the BMP format */
-	uint32_t size;     /* size of the BMP file in bytes */
-	uint16_t unused1;  /* key */
-	uint16_t unused2;  /* shadow number */
-	uint32_t offset;   /* starting address of the pixel array (bitmap data) */
+    uint8_t  id[2];    /* magic number to identify the BMP format */
+    uint32_t size;     /* size of the BMP file in bytes */
+    uint16_t unused1;  /* key */
+    uint16_t unused2;  /* shadow number */
+    uint32_t offset;   /* starting address of the pixel array (bitmap data) */
 } BMPheader;
 
 /* 40 bytes BITMAPINFOHEADER */
 typedef struct {
-	uint32_t size;            /* the size of this header (40 bytes) */
-	uint32_t width;           /* the bitmap width in pixels */
-	int32_t  height;          /* the bitmap height in pixels; can be negative */
-	uint16_t nplanes;         /* number of color planes used; Must set to 1 */
-	uint16_t depth;           /* bpp number. Usually: 1, 4, 8, 16, 24 or 32 */
-	uint32_t compression;     /* compression method used */
-	uint32_t pixelarraysize;  /* size of the raw bitmap (pixel) data */
-	uint32_t hres;            /* horizontal resolution (pixel per meter) */
-	uint32_t vres;            /* vertical resolution (pixel per meter) */
-	uint32_t ncolors;         /* colors in the palette. 0 means 2^n */
-	uint32_t nimpcolors;      /* important colors used, usually ignored */
+    uint32_t size;            /* the size of this header (40 bytes) */
+    uint32_t width;           /* the bitmap width in pixels */
+    int32_t  height;          /* the bitmap height in pixels; can be negative */
+    uint16_t nplanes;         /* number of color planes used; Must set to 1 */
+    uint16_t depth;           /* bpp number. Usually: 1, 4, 8, 16, 24 or 32 */
+    uint32_t compression;     /* compression method used */
+    uint32_t pixelarraysize;  /* size of the raw bitmap (pixel) data */
+    uint32_t hres;            /* horizontal resolution (pixel per meter) */
+    uint32_t vres;            /* vertical resolution (pixel per meter) */
+    uint32_t ncolors;         /* colors in the palette. 0 means 2^n */
+    uint32_t nimpcolors;      /* important colors used, usually ignored */
 } DIBheader;
 
 typedef struct {
-	BMPheader bmpheader;             /* 14 bytes bmp starting header */
-	DIBheader dibheader;             /* 40 bytes dib header */
-	uint8_t   palette[PALETTE_SIZE]; /* color palette; mandatory for depth <= 8 */
-	uint8_t   *imgpixels;            /* array of bytes representing each pixel */
+    BMPheader bmpheader;             /* 14 bytes bmp starting header */
+    DIBheader dibheader;             /* 40 bytes dib header */
+    uint8_t   palette[PALETTE_SIZE]; /* color palette; mandatory for depth <= 8 */
+    uint8_t   *imgpixels;            /* array of bytes representing each pixel */
 } Bitmap;
 
-void decreasecoeff(uint8_t *coeff);
-uint8_t *randomtable(uint32_t tablesize, int seed);
-void xorbmpwithrandomtable(Bitmap *bmp, int seed);
-void bmpheaderdebug(Bitmap *bp);
-void dibheaderdebug(Bitmap *bp);
-uint32_t arraysize(uint32_t width, int32_t height);
+/*
+static void     bmpheaderdebug(Bitmap *bp);
+static void     dibheaderdebug(Bitmap *bp);
+*/
 
 /* prototypes */
-static void     usage(void);
 
 static void     setseed(int64_t s);
 static int      nextbyte(void);
 
+static int      countfiles(const char *dirname);
+static void     usage(void);
 static uint32_t get32bitsfromheader(FILE *fp, int offset);
 static uint32_t bmpfilewidth(FILE *fp);
 static uint32_t bmpfileheight(FILE *fp);
@@ -74,7 +74,7 @@ static void     writedibheader(Bitmap *bp, FILE *fp);
 static Bitmap   *bmpfromfile(const char *filename);
 static int      isvalidbmpsize(FILE *fp, uint16_t k, uint32_t secretsize);
 static int      kdivisiblesize(FILE *fp, uint16_t k);
-static int      bmpimagesize(Bitmap *bp);
+static uint32_t bmpimagesize(Bitmap *bp);
 static void     bmptofile(Bitmap *bp, const char *filename);
 static void     findclosestpair(int value, uint32_t *v1, int32_t *v2);
 static Bitmap   *newshadow(uint32_t width, int32_t height, uint16_t seed, uint16_t shadownumber);
@@ -91,7 +91,11 @@ static void     getbmpfilenames(char **filenames, char *dir, uint16_t k, uint16_
 static void     getshadowfilenames(char **filenames, char *dir, uint16_t k, uint32_t size);
 static void     distributeimage(uint16_t k, uint16_t n, uint16_t seed, char *imgpath, char *dir);
 static void     recoverimage(uint16_t k, uint32_t width, int32_t height, char *filename, char *dir);
-static int      countfiles(const char *dirname);
+static void     decreasecoeff(uint8_t *coeff);
+static uint8_t  *randomtable(uint32_t tablesize, uint16_t seed);
+static void     xorbmpwithrandomtable(Bitmap *bmp, uint16_t seed);
+static uint32_t pixelarraysize(uint32_t width, int32_t height);
+
 
 /* globals */
 static char *argv0;                /* program name for usage() */
@@ -115,17 +119,31 @@ static const int modinv[PRIME] = { /* modular multiplicative inverses */
     57, 32, 110, 214, 154, 64, 171, 128, 256
 };
 
+int
+countfiles(const char *dirname){
+    struct dirent *d;
+    int filecount = 0;
+    DIR *dp = xopendir(dirname);
+
+    while((d = readdir(dp)))
+        if(d->d_type == DT_REG) /* If the entry is a regular file */
+            filecount++;
+    closedir(dp);
+
+    return filecount;
+}
+
 void
 usage(void){
-	die("usage: %s -(d|r) -secret image -k number -w width -h height -s seed"
-			"[-n number] [-dir directory]\n", argv0);
+    die("usage: %s -(d|r) --secret image -k number -w width -h height -s seed"
+            "[-n number] [--dir directory]\n", argv0);
 }
 
 /* Calculates needed pixelarraysize, accounting for padding.
  * See: https://en.wikipedia.org/wiki/BMP_file_format#Pixel_storage */
 inline uint32_t
-arraysize(uint32_t width, int32_t height){
-	return ((BITS_PER_PIXEL * width + 31)/32) * 4 * height;
+pixelarraysize(uint32_t width, int32_t height){
+    return ((BITS_PER_PIXEL * width + 31)/32) * 4 * height;
 }
 
 void
@@ -315,7 +333,7 @@ bmpfromfile(const char *filename){
     xfread(bp->palette, sizeof(bp->palette), 1, fp);
 
     /* read pixel data */
-    int imagesize = bmpimagesize(bp);
+    uint32_t imagesize = bmpimagesize(bp);
     bp->imgpixels = xmalloc(imagesize);
     xfread(bp->imgpixels, sizeof(bp->imgpixels[0]), imagesize, fp);
     xfclose(fp);
@@ -333,13 +351,13 @@ isvalidbmpsize(FILE *fp, uint16_t k, uint32_t secretsize){
 
 int
 kdivisiblesize(FILE *fp, uint16_t k){
-    int pixels     = bmpfilewidth(fp) * bmpfileheight(fp);
-    int aux        = pixels / k;
+    int pixels = bmpfilewidth(fp) * bmpfileheight(fp);
+    int aux    = pixels / k;
 
     return pixels == aux * k;
 }
 
-int
+uint32_t
 bmpimagesize(Bitmap *bp){
     uint32_t sz = bp->bmpheader.size;
 
@@ -361,7 +379,7 @@ bmptofile(Bitmap *bp, const char *filename){
 }
 
 /* find closest pair of values that when multiplied, give x.
- * Used to make the shadows as 'squared' as possible*/
+ * Used to make the shadows as 'squared' as possible */
 void
 findclosestpair(int x, uint32_t *width, int32_t *height){
     int n = floor(sqrt(x));
@@ -392,7 +410,7 @@ newshadow(uint32_t width, int32_t height, uint16_t seed, uint16_t shadownumber){
     bmp->dibheader.width          = width;
     bmp->dibheader.height         = height;
     bmp->dibheader.nplanes        = 1;
-    bmp->dibheader.depth          = 8;
+    bmp->dibheader.depth          = BITS_PER_PIXEL;
     bmp->dibheader.compression    = 0;
     bmp->dibheader.pixelarraysize = pixelarraysize;
     bmp->dibheader.hres           = 0;
@@ -492,7 +510,7 @@ findcoefficients(int **mat, uint16_t k){
 }
 
 uint8_t *
-randomtable(uint32_t tablesize, int seed) {
+randomtable(uint32_t tablesize, uint16_t seed) {
     uint8_t *table = xmalloc(tablesize * sizeof(*table));
     setseed(seed);
 
@@ -504,11 +522,11 @@ randomtable(uint32_t tablesize, int seed) {
 }
 
 void
-xorbmpwithrandomtable(Bitmap *bmp, int seed){
-    int imgsize    = bmpimagesize(bmp);
-    uint8_t *table = randomtable(imgsize, seed);
+xorbmpwithrandomtable(Bitmap *bmp, uint16_t seed){
+    uint32_t imgsize = bmpimagesize(bmp);
+    uint8_t *table   = randomtable(imgsize, seed);
 
-    for(int i = 0; i < imgsize; i++)
+    for(unsigned int i = 0; i < imgsize; i++)
         bmp->imgpixels[i] ^= table[i];
 
     free(table);
@@ -553,10 +571,10 @@ revealsecret(Bitmap **shadows, uint16_t k, uint32_t width, int32_t height, const
 
 void
 hideshadow(Bitmap *bp, Bitmap *shadow){
-    int i, j;
+    unsigned int i, j;
     uint8_t byte;
     char shadowfilename[20] = {0};
-    int pixels = bmpimagesize(shadow);
+    uint32_t pixels = bmpimagesize(shadow);
 
     bp->bmpheader.unused1 = shadow->bmpheader.unused1;
     bp->bmpheader.unused2 = shadow->bmpheader.unused2;
@@ -583,7 +601,7 @@ retrieveshadow(Bitmap *bp, uint32_t width, int32_t height, uint16_t k){
     uint16_t key          = bp->bmpheader.unused1;
     uint16_t shadownumber = bp->bmpheader.unused2;
 
-    findclosestpair(arraysize(width, height)/k, &width, &height);
+    findclosestpair(pixelarraysize(width, height)/k, &width, &height);
     Bitmap *shadow = newshadow(width, height, key, shadownumber);
     int shadowpixels = shadow->dibheader.pixelarraysize;
 
@@ -639,12 +657,12 @@ getvalidfilenames(char **filenames, char *dir, uint16_t k, uint16_t n, int (*isv
     struct dirent *d;
     FILE *fp;
     DIR *dp = xopendir(dir);
-    char filepath[255] = {0};
+    char filepath[PATH_MAX + 1] = {0};
     int i = 0;
 
     while((d = readdir(dp)) && i < n){
         if(d->d_type == DT_REG){
-            snprintf(filepath, 255, "%s/%s", dir, d->d_name);
+            snprintf(filepath, PATH_MAX + 1, "%s/%.*s", NAME_MAX, dir, d->d_name);
             fp = xfopen(filepath, "r");
             if(isvalid(fp, k, size)){
                 filenames[i] = xmalloc(strlen(filepath) + 1);
@@ -720,54 +738,42 @@ recoverimage(uint16_t k, uint32_t width, int32_t height, char *filename, char *d
     free(shadows);
 }
 
-int
-countfiles(const char *dirname){
-    struct dirent *d;
-    int filecount = 0;
-    DIR *dp = xopendir(dirname);
+/*
+   void
+   bmpheaderdebug(Bitmap *bp){
+   printf("ID: %c%-15c size: %-16d r1: %-16d r2: %-16d offset: %-16d\n",
+   bp->bmpheader.id[0], bp->bmpheader.id[1], bp->bmpheader.size,
+   bp->bmpheader.unused1, bp->bmpheader.unused2, bp->bmpheader.offset);
+   }
 
-    while((d = readdir(dp)))
-        if(d->d_type == DT_REG) /* If the entry is a regular file */
-            filecount++;
-    closedir(dp);
-
-    return filecount;
-}
-
-void
-bmpheaderdebug(Bitmap *bp){
-    printf("ID: %c%-15c size: %-16d r1: %-16d r2: %-16d offset: %-16d\n",
-            bp->bmpheader.id[0], bp->bmpheader.id[1], bp->bmpheader.size,
-            bp->bmpheader.unused1, bp->bmpheader.unused2, bp->bmpheader.offset);
-}
-
-void
-dibheaderdebug(Bitmap *bp){
-    printf("dibsize: %-16d width: %-16d height: %-16d\n"
-            "nplanes: %-16d depth: %-16d compression:%-16d\n"
-            "pixelarraysize: %-16d hres: %-16d vres:%-16d\n"
-            "ncolors: %-16d nimpcolors: %-16d\n", bp->dibheader.size,
-            bp->dibheader.width, bp->dibheader.height, bp->dibheader.nplanes,
-            bp->dibheader.depth, bp->dibheader.compression,
-            bp->dibheader.pixelarraysize, bp->dibheader.hres, bp->dibheader.vres,
-            bp->dibheader.ncolors, bp->dibheader.nimpcolors);
-}
+   void
+   dibheaderdebug(Bitmap *bp){
+   printf("dibsize: %-16d width: %-16d height: %-16d\n"
+   "nplanes: %-16d depth: %-16d compression:%-16d\n"
+   "pixelarraysize: %-16d hres: %-16d vres:%-16d\n"
+   "ncolors: %-16d nimpcolors: %-16d\n", bp->dibheader.size,
+   bp->dibheader.width, bp->dibheader.height, bp->dibheader.nplanes,
+   bp->dibheader.depth, bp->dibheader.compression,
+   bp->dibheader.pixelarraysize, bp->dibheader.hres, bp->dibheader.vres,
+   bp->dibheader.ncolors, bp->dibheader.nimpcolors);
+   }
+   */
 
 int
 main(int argc, char *argv[]){
-    char *filename, *dir;
+    char *filename = NULL;
+    char *dir = "./";
     int dflag = 0;
     int rflag = 0;
     int kflag = 0;
     int wflag = 0;
     int hflag = 0;
-    int sflag = 0;
     int nflag = 0;
-    int dirflag = 0;
     int secretflag = 0;
-    uint16_t seed, k, n;
-    uint32_t width;
-    int32_t height;
+    uint16_t seed = DEFAULT_SEED;
+    uint16_t k = 0, n = 0;
+    uint32_t width = 0;
+    int32_t height = 0;
     int i;
 
     argv0 = argv[0]; /* save program name for usage() */
@@ -777,7 +783,7 @@ main(int argc, char *argv[]){
             dflag = 1;
         } else if(strcmp(argv[i], "-r") == 0) {
             rflag = 1;
-        } else if(strcmp(argv[i], "-secret") == 0){
+        } else if(strcmp(argv[i], "--secret") == 0){
             secretflag = 1;
             if(i + 1 < argc){
                 filename = argv[++i];
@@ -806,7 +812,6 @@ main(int argc, char *argv[]){
                 usage();
             }
         } else if(strcmp(argv[i], "-s") == 0) {
-            sflag = 1;
             if(i + 1 < argc){
                 seed = atoi(argv[++i]);
             } else {
@@ -819,8 +824,7 @@ main(int argc, char *argv[]){
             } else {
                 usage();
             }
-        } else if(strcmp(argv[i], "-dir") == 0){
-            dirflag = 1;
+        } else if(strcmp(argv[i], "--dir") == 0){
             if(i + 1 < argc){
                 dir = argv[++i];
             } else{
@@ -836,12 +840,8 @@ main(int argc, char *argv[]){
     if((rflag && !(wflag && hflag)) || !width || !height)
         die("specify a positive width and height with -w -h for the revealed image\n");
 
-    if(!dirflag)
-        dir = "./";
     if(!nflag)
         n = countfiles(dir);
-    if(!sflag)
-        seed = DEFAULT_SEED;
 
     if(k > n || k < 2 || n < 2)
         die("k and n must be: 2 <= k <= n\n");
