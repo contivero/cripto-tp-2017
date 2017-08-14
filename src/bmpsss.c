@@ -1,21 +1,18 @@
+#include "util.h"
 #include <math.h>
-#include <stdarg.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-#include <dirent.h>
 
+#define BMP_MAGIC_NUMBER       0x424D
 #define BMP_HEADER_SIZE        14
 #define DIB_HEADER_SIZE        40
 #define PALETTE_SIZE           1024
 #define PIXEL_ARRAY_OFFSET     (BMP_HEADER_SIZE + DIB_HEADER_SIZE + PALETTE_SIZE)
 #define UNUSED2_OFFSET         8
+#define BITS_PER_PIXEL         8
 #define WIDTH_OFFSET           18
 #define HEIGHT_OFFSET          22
-#define PRIME                  257
 #define DEFAULT_SEED           691
-#define BMP_MAGIC_NUMBER       0x424D
+#define PRIME                  257
 #define RIGHTMOST_BIT_ON(x)    ((x) |= 0x01)
 #define RIGHTMOST_BIT_OFF(x)   ((x) &= 0xFE)
 
@@ -31,7 +28,7 @@ typedef struct {
 typedef struct {
 	uint32_t size;            /* the size of this header (40 bytes) */
 	uint32_t width;           /* the bitmap width in pixels */
-	uint32_t height;          /* the bitmap height in pixels */
+	int32_t  height;          /* the bitmap height in pixels; can be negative */
 	uint16_t nplanes;         /* number of color planes used; Must set to 1 */
 	uint16_t depth;           /* bpp number. Usually: 1, 4, 8, 16, 24 or 32 */
 	uint32_t compression;     /* compression method used */
@@ -54,27 +51,19 @@ uint8_t *randomtable(uint32_t tablesize, int seed);
 void xorbmpwithrandomtable(Bitmap *bmp, int seed);
 void bmpheaderdebug(Bitmap *bp);
 void dibheaderdebug(Bitmap *bp);
-uint32_t arraysize(uint32_t width, uint32_t height);
+uint32_t arraysize(uint32_t width, int32_t height);
+
 /* prototypes */
-static int      isbigendian(void);
-static void     uint16swap(uint16_t *x);
-static void     uint32swap(uint32_t *x);
+static void     usage(void);
+
 static void     setseed(int64_t s);
 static int      nextbyte(void);
-static void     die(const char *errstr, ...);
-static void     *xmalloc(size_t size);
-static FILE     *xfopen(const char *filename, const char *mode);
-static void     xfclose(FILE *fp);
-static void     xfread(void *ptr, size_t size, size_t nmemb, FILE *stream);
-static void     xfwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream);
-static DIR      *xopendir(const char *name);
-static void     usage(void);
-static int      mod(int a, int b);
+
 static uint32_t get32bitsfromheader(FILE *fp, int offset);
 static uint32_t bmpfilewidth(FILE *fp);
 static uint32_t bmpfileheight(FILE *fp);
 static void     initpalette(uint8_t palette[]);
-static Bitmap   *newbitmap(uint32_t width, uint32_t height, uint16_t seed);
+static Bitmap   *newbitmap(uint32_t width, int32_t height, uint16_t seed);
 static void     freebitmap(Bitmap *bp);
 static void     changeheaderendianness(BMPheader *h);
 static void     changedibendianness(DIBheader *h);
@@ -87,13 +76,13 @@ static int      isvalidbmpsize(FILE *fp, uint16_t k, uint32_t secretsize);
 static int      kdivisiblesize(FILE *fp, uint16_t k);
 static int      bmpimagesize(Bitmap *bp);
 static void     bmptofile(Bitmap *bp, const char *filename);
-static void     findclosestpair(int value, uint32_t *v1, uint32_t *v2);
-static Bitmap   *newshadow(uint32_t width, uint32_t height, uint16_t seed, uint16_t shadownumber);
-static Bitmap   **formshadows(Bitmap *bp, uint16_t seed, int k, int n);
+static void     findclosestpair(int value, uint32_t *v1, int32_t *v2);
+static Bitmap   *newshadow(uint32_t width, int32_t height, uint16_t seed, uint16_t shadownumber);
+static Bitmap   **formshadows(Bitmap *bp, uint16_t seed, uint16_t k, uint16_t n);
 static void     findcoefficients(int **mat, uint16_t k);
-static void     revealsecret(Bitmap **shadows, uint16_t k, uint32_t width, uint32_t height, const char *filename);
+static void     revealsecret(Bitmap **shadows, uint16_t k, uint32_t width, int32_t height, const char *filename);
 static void     hideshadow(Bitmap *bp, Bitmap *shadow);
-static Bitmap   *retrieveshadow(Bitmap *bp, uint32_t width, uint32_t height, uint16_t k);
+static Bitmap   *retrieveshadow(Bitmap *bp, uint32_t width, int32_t height, uint16_t k);
 static int      isbmp(FILE *fp);
 static int      isvalidshadow(FILE *fp, uint16_t k, uint32_t size);
 static int      isvalidbmp(FILE *fp, uint16_t k, uint32_t ignored);
@@ -101,12 +90,12 @@ static void     getvalidfilenames(char **filenames, char *dir, uint16_t k, uint1
 static void     getbmpfilenames(char **filenames, char *dir, uint16_t k, uint16_t n, uint32_t size);
 static void     getshadowfilenames(char **filenames, char *dir, uint16_t k, uint32_t size);
 static void     distributeimage(uint16_t k, uint16_t n, uint16_t seed, char *imgpath, char *dir);
-static void     recoverimage(uint16_t k, uint32_t width, uint32_t height, char *filename, char *dir);
+static void     recoverimage(uint16_t k, uint32_t width, int32_t height, char *filename, char *dir);
 static int      countfiles(const char *dirname);
 
 /* globals */
 static char *argv0;                /* program name for usage() */
-static int64_t rseed;               /* seed to use for the random table */
+static int64_t rseed;              /* seed to use for the random table */
 static const int modinv[PRIME] = { /* modular multiplicative inverses */
     0, 1, 129, 86, 193, 103, 43, 147, 225, 200, 180, 187, 150, 178, 202, 120,
     241, 121, 100, 230, 90, 49, 222, 190, 75, 72, 89, 238, 101, 195, 60, 199,
@@ -126,316 +115,228 @@ static const int modinv[PRIME] = { /* modular multiplicative inverses */
     57, 32, 110, 214, 154, 64, 171, 128, 256
 };
 
-uint32_t
-arraysize(uint32_t width, uint32_t height){
-	return ((8 * width + 31)/32) * 4 * height;
-}
-
-int
-isbigendian(void){
-	int value = 1;
-
-	return *(char *)&value != 1;
-}
-
-inline void
-uint16swap(uint16_t *x){
-	*x = *x >> 8 | *x << 8;
-}
-
-inline void
-uint32swap(uint32_t *x){
-	*x = ((*x & (uint32_t) 0x000000FFU) << 24) |
-		((*x & (uint32_t) 0x0000FF00U) <<  8) |
-		((*x & (uint32_t) 0x00FF0000U) >>  8) |
-		((*x & (uint32_t) 0xFF000000U) >> 24);
-}
-
-void
-setseed(int64_t s){
-  rseed = (s ^ 25214903917) & 281474976710655;
-}
-
-int
-nextbyte(void) {
-  rseed = (rseed * 25214903917 + 11) & 281474976710655;
-  int n = rseed >> (48 - 31);
-
-  return (int64_t)256 * (int64_t)n >> 31;
-}
-
-void
-die(const char *errstr, ...){
-	va_list ap;
-
-	va_start(ap, errstr);
-	vfprintf(stderr, errstr, ap);
-	va_end(ap);
-	exit(EXIT_FAILURE);
-}
-
-void *
-xmalloc(size_t size){
-	void *p = malloc(size);
-
-	if(!p)
-		die("Out of memory: couldn't malloc %d bytes\n", size);
-
-	return p;
-}
-
-FILE *
-xfopen (const char *filename, const char *mode){
-	FILE *fp = fopen(filename, mode);
-
-	if(!fp)
-		die("fopen: couldn't open %s\n", filename);
-
-	return fp;
-}
-
-void
-xfclose (FILE *fp){
-	if(fclose(fp) == EOF)
-		die("fclose: error\n");
-}
-
-void
-xfread(void *ptr, size_t size, size_t nmemb, FILE *stream){
-	if (fread(ptr, size, nmemb, stream) < 1)
-		die("fread: error\n");
-}
-
-void
-xfwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream){
-	if (fwrite(ptr, size, nmemb, stream) != nmemb)
-		die("fwrite: error in writing or end of file.\n");
-}
-
-DIR *
-xopendir(const char *name){
-	DIR *dp = opendir(name);
-
-	if(!dp)
-		die("opendir: error\n");
-
-	return dp;
-}
-
 void
 usage(void){
 	die("usage: %s -(d|r) -secret image -k number -w width -h height -s seed"
 			"[-n number] [-dir directory]\n", argv0);
 }
 
-/* Used to handle cases such as:
- * -1 % 10 == -1
- * when it should be:
- * -1 % 10 == 9
- */
-int
-mod(int a, int b){
-	int m = a % b;
+/* Calculates needed pixelarraysize, accounting for padding.
+ * See: https://en.wikipedia.org/wiki/BMP_file_format#Pixel_storage */
+inline uint32_t
+arraysize(uint32_t width, int32_t height){
+	return ((BITS_PER_PIXEL * width + 31)/32) * 4 * height;
+}
 
-	return m < 0 ? m + b : m;
+void
+setseed(int64_t s){
+    rseed = (s ^ 25214903917) & 281474976710655;
+}
+
+int
+nextbyte(void) {
+    rseed = (rseed * 25214903917 + 11) & 281474976710655;
+    int n = rseed >> (48 - 31);
+
+    return (int64_t)256 * (int64_t)n >> 31;
 }
 
 uint32_t
 get32bitsfromheader(FILE *fp, int offset){
-	uint32_t value;
-	long pos = ftell(fp);
+    uint32_t value;
+    long pos = ftell(fp);
 
-	fseek(fp, offset, SEEK_SET);
-	xfread(&value, sizeof(value), 1, fp);
-	fseek(fp, pos, SEEK_SET);
+    fseek(fp, offset, SEEK_SET);
+    xfread(&value, sizeof(value), 1, fp);
+    fseek(fp, pos, SEEK_SET);
 
-	return value;
+    return value;
 }
 
 uint32_t
 bmpfilewidth(FILE *fp){
-	return get32bitsfromheader(fp, WIDTH_OFFSET);
+    return get32bitsfromheader(fp, WIDTH_OFFSET);
 }
 
 uint32_t
 bmpfileheight(FILE *fp){
-	return get32bitsfromheader(fp, HEIGHT_OFFSET);
+    return get32bitsfromheader(fp, HEIGHT_OFFSET);
 }
 
 /* initialize palette with default 8-bit greyscale values */
 void
 initpalette(uint8_t palette[]){
-	int i, j;
+    int i, j;
 
-	for(i = 0; i < 256; i++){
-		j = i * 4;
-		palette[j++] = i;
-		palette[j++] = i;
-		palette[j++] = i;
-		palette[j] = 0;
-	}
+    for(i = 0; i < 256; i++){
+        j = i * 4;
+        palette[j++] = i;
+        palette[j++] = i;
+        palette[j++] = i;
+        palette[j] = 0;
+    }
 }
 
 /* If no seed is needed, just pass 0 */
 Bitmap *
-newbitmap(uint32_t width, uint32_t height, uint16_t seed){
-    uint32_t rowsize = ((8 * width + 31)/32) * 4;
-	uint32_t pixelarraysize = rowsize * height;
-	Bitmap *bmp        = xmalloc(sizeof(*bmp));
-	bmp->imgpixels     = xmalloc(pixelarraysize);
-	initpalette(bmp->palette);
+newbitmap(uint32_t width, int32_t height, uint16_t seed){
+    uint32_t rowsize = ((BITS_PER_PIXEL * width + 31)/32) * 4;
+    uint32_t pixelarraysize = rowsize * height;
+    Bitmap *bmp        = xmalloc(sizeof(*bmp));
+    bmp->imgpixels     = xmalloc(pixelarraysize);
+    initpalette(bmp->palette);
 
-	bmp->bmpheader.id[0]   = 'B';
-	bmp->bmpheader.id[1]   = 'M';
-	bmp->bmpheader.size    = PIXEL_ARRAY_OFFSET + pixelarraysize;
-	bmp->bmpheader.unused1 = seed;
-	bmp->bmpheader.unused2 = 0;
-	bmp->bmpheader.offset  = PIXEL_ARRAY_OFFSET;
+    bmp->bmpheader.id[0]   = 'B';
+    bmp->bmpheader.id[1]   = 'M';
+    bmp->bmpheader.size    = PIXEL_ARRAY_OFFSET + pixelarraysize;
+    bmp->bmpheader.unused1 = seed;
+    bmp->bmpheader.unused2 = 0;
+    bmp->bmpheader.offset  = PIXEL_ARRAY_OFFSET;
 
-	bmp->dibheader.size           = DIB_HEADER_SIZE;
-	bmp->dibheader.width          = width;
-	bmp->dibheader.height         = height;
-	bmp->dibheader.nplanes        = 1;
-	bmp->dibheader.depth          = 8;
-	bmp->dibheader.compression    = 0;
-	bmp->dibheader.pixelarraysize = pixelarraysize;
-	bmp->dibheader.hres           = 0;
-	bmp->dibheader.vres           = 0;
-	bmp->dibheader.ncolors        = 0;
-	bmp->dibheader.nimpcolors     = 0;
+    bmp->dibheader.size           = DIB_HEADER_SIZE;
+    bmp->dibheader.width          = width;
+    bmp->dibheader.height         = height;
+    bmp->dibheader.nplanes        = 1;
+    bmp->dibheader.depth          = BITS_PER_PIXEL;
+    bmp->dibheader.compression    = 0;
+    bmp->dibheader.pixelarraysize = pixelarraysize;
+    bmp->dibheader.hres           = 0;
+    bmp->dibheader.vres           = 0;
+    bmp->dibheader.ncolors        = 0;
+    bmp->dibheader.nimpcolors     = 0;
 
-	return bmp;
+    return bmp;
 }
 
 void
 freebitmap(Bitmap *bp){
-	free(bp->imgpixels);
-	free(bp);
+    free(bp->imgpixels);
+    free(bp);
 }
 
 void
 changeheaderendianness(BMPheader *h){
-	uint32swap(&h->size);
-	uint16swap(&h->unused1);
-	uint16swap(&h->unused2);
-	uint32swap(&h->offset);
+    uint32swap(&h->size);
+    uint16swap(&h->unused1);
+    uint16swap(&h->unused2);
+    uint32swap(&h->offset);
 }
 
 void
 changedibendianness(DIBheader *h){
-	uint32swap(&h->size);
-	uint32swap(&h->width);
-	uint32swap(&h->height);
-	uint16swap(&h->nplanes);
-	uint16swap(&h->depth);
-	uint32swap(&h->compression);
-	uint32swap(&h->pixelarraysize);
-	uint32swap(&h->hres);
-	uint32swap(&h->vres);
-	uint32swap(&h->ncolors);
-	uint32swap(&h->nimpcolors);
+    uint32swap(&h->size);
+    uint32swap(&h->width);
+    int32swap(&h->height);
+    uint16swap(&h->nplanes);
+    uint16swap(&h->depth);
+    uint32swap(&h->compression);
+    uint32swap(&h->pixelarraysize);
+    uint32swap(&h->hres);
+    uint32swap(&h->vres);
+    uint32swap(&h->ncolors);
+    uint32swap(&h->nimpcolors);
 }
 
 void
 readbmpheader(Bitmap *bp, FILE *fp){
-	BMPheader *h = &bp->bmpheader;
+    BMPheader *h = &bp->bmpheader;
 
-	xfread(h->id, sizeof(h->id), 1, fp);
-	xfread(&h->size, sizeof(h->size), 1, fp);
-	xfread(&h->unused1, sizeof(h->unused1), 1, fp);
-	xfread(&h->unused2, sizeof(h->unused2), 1, fp);
-	xfread(&h->offset, sizeof(h->offset), 1, fp);
+    xfread(h->id, sizeof(h->id), 1, fp);
+    xfread(&h->size, sizeof(h->size), 1, fp);
+    xfread(&h->unused1, sizeof(h->unused1), 1, fp);
+    xfread(&h->unused2, sizeof(h->unused2), 1, fp);
+    xfread(&h->offset, sizeof(h->offset), 1, fp);
 
-	if(isbigendian())
-		changeheaderendianness(&bp->bmpheader);
+    if(isbigendian())
+        changeheaderendianness(&bp->bmpheader);
 }
 
 void
 writebmpheader(Bitmap *bp, FILE *fp){
-	BMPheader h = bp->bmpheader;
+    BMPheader h = bp->bmpheader;
 
-	if(isbigendian())
-		changeheaderendianness(&h);
+    if(isbigendian())
+        changeheaderendianness(&h);
 
-	xfwrite(h.id, sizeof(h.id), 1, fp);
-	xfwrite(&(h.size), sizeof(h.size), 1, fp);
-	xfwrite(&(h.unused1), sizeof(h.unused1), 1, fp);
-	xfwrite(&(h.unused2), sizeof(h.unused2), 1, fp);
-	xfwrite(&(h.offset), sizeof(h.offset), 1, fp);
+    xfwrite(h.id, sizeof(h.id), 1, fp);
+    xfwrite(&(h.size), sizeof(h.size), 1, fp);
+    xfwrite(&(h.unused1), sizeof(h.unused1), 1, fp);
+    xfwrite(&(h.unused2), sizeof(h.unused2), 1, fp);
+    xfwrite(&(h.offset), sizeof(h.offset), 1, fp);
 }
 
 void
 readdibheader(Bitmap *bp, FILE *fp){
-	DIBheader *h = &bp->dibheader;
+    DIBheader *h = &bp->dibheader;
 
-	xfread(&h->size, sizeof(h->size), 1, fp);
-	xfread(&h->width, sizeof(h->width), 1, fp);
-	xfread(&h->height, sizeof(h->height), 1, fp);
-	xfread(&h->nplanes, sizeof(h->nplanes), 1, fp);
-	xfread(&h->depth, sizeof(h->depth), 1, fp);
-	xfread(&h->compression, sizeof(h->compression), 1, fp);
-	xfread(&h->pixelarraysize, sizeof(h->pixelarraysize), 1, fp);
-	xfread(&h->hres, sizeof(h->hres), 1, fp);
-	xfread(&h->vres, sizeof(h->vres), 1, fp);
-	xfread(&h->ncolors, sizeof(h->ncolors), 1, fp);
-	xfread(&h->nimpcolors, sizeof(h->nimpcolors), 1, fp);
+    xfread(&h->size, sizeof(h->size), 1, fp);
+    xfread(&h->width, sizeof(h->width), 1, fp);
+    xfread(&h->height, sizeof(h->height), 1, fp);
+    xfread(&h->nplanes, sizeof(h->nplanes), 1, fp);
+    xfread(&h->depth, sizeof(h->depth), 1, fp);
+    xfread(&h->compression, sizeof(h->compression), 1, fp);
+    xfread(&h->pixelarraysize, sizeof(h->pixelarraysize), 1, fp);
+    xfread(&h->hres, sizeof(h->hres), 1, fp);
+    xfread(&h->vres, sizeof(h->vres), 1, fp);
+    xfread(&h->ncolors, sizeof(h->ncolors), 1, fp);
+    xfread(&h->nimpcolors, sizeof(h->nimpcolors), 1, fp);
 
-	if(isbigendian())
-		changedibendianness(&bp->dibheader);
+    if(isbigendian())
+        changedibendianness(&bp->dibheader);
 }
 
 void
 writedibheader(Bitmap *bp, FILE *fp){
-	DIBheader h = bp->dibheader;
+    DIBheader h = bp->dibheader;
 
-	if(isbigendian())
-		changedibendianness(&h);
+    if(isbigendian())
+        changedibendianness(&h);
 
-	xfwrite(&(h.size), sizeof(h.size), 1, fp);
-	xfwrite(&(h.width), sizeof(h.width), 1, fp);
-	xfwrite(&(h.height), sizeof(h.height), 1, fp);
-	xfwrite(&(h.nplanes), sizeof(h.nplanes), 1, fp);
-	xfwrite(&(h.depth), sizeof(h.depth), 1, fp);
-	xfwrite(&(h.compression), sizeof(h.compression), 1, fp);
-	xfwrite(&(h.pixelarraysize), sizeof(h.pixelarraysize), 1, fp);
-	xfwrite(&(h.hres), sizeof(h.hres), 1, fp);
-	xfwrite(&(h.vres), sizeof(h.vres), 1, fp);
-	xfwrite(&(h.ncolors), sizeof(h.ncolors), 1, fp);
-	xfwrite(&(h.nimpcolors), sizeof(h.nimpcolors), 1, fp);
+    xfwrite(&(h.size), sizeof(h.size), 1, fp);
+    xfwrite(&(h.width), sizeof(h.width), 1, fp);
+    xfwrite(&(h.height), sizeof(h.height), 1, fp);
+    xfwrite(&(h.nplanes), sizeof(h.nplanes), 1, fp);
+    xfwrite(&(h.depth), sizeof(h.depth), 1, fp);
+    xfwrite(&(h.compression), sizeof(h.compression), 1, fp);
+    xfwrite(&(h.pixelarraysize), sizeof(h.pixelarraysize), 1, fp);
+    xfwrite(&(h.hres), sizeof(h.hres), 1, fp);
+    xfwrite(&(h.vres), sizeof(h.vres), 1, fp);
+    xfwrite(&(h.ncolors), sizeof(h.ncolors), 1, fp);
+    xfwrite(&(h.nimpcolors), sizeof(h.nimpcolors), 1, fp);
 }
 
 Bitmap *
 bmpfromfile(const char *filename){
-	FILE *fp = xfopen(filename, "r");
-	Bitmap *bp = xmalloc(sizeof(*bp));
+    FILE *fp = xfopen(filename, "r");
+    Bitmap *bp = xmalloc(sizeof(*bp));
 
-	readbmpheader(bp, fp);
-	readdibheader(bp, fp);
-	xfread(bp->palette, sizeof(bp->palette), 1, fp);
+    readbmpheader(bp, fp);
+    readdibheader(bp, fp);
+    xfread(bp->palette, sizeof(bp->palette), 1, fp);
 
-	/* read pixel data */
-	int imagesize = bmpimagesize(bp);
-	bp->imgpixels = xmalloc(imagesize);
-	xfread(bp->imgpixels, sizeof(bp->imgpixels[0]), imagesize, fp);
-	xfclose(fp);
+    /* read pixel data */
+    int imagesize = bmpimagesize(bp);
+    bp->imgpixels = xmalloc(imagesize);
+    xfread(bp->imgpixels, sizeof(bp->imgpixels[0]), imagesize, fp);
+    xfclose(fp);
 
-	return bp;
+    return bp;
 }
 
 int
 isvalidbmpsize(FILE *fp, uint16_t k, uint32_t secretsize){
-	uint32_t shadowsize = (secretsize * 8)/k;
-	uint32_t imgsize    = bmpfilewidth(fp) * bmpfileheight(fp);
+    uint32_t shadowsize = (secretsize * 8)/k;
+    uint32_t imgsize    = bmpfilewidth(fp) * bmpfileheight(fp);
 
-	return imgsize >= shadowsize;
+    return imgsize >= shadowsize;
 }
 
 int
 kdivisiblesize(FILE *fp, uint16_t k){
-	int pixels     = bmpfilewidth(fp) * bmpfileheight(fp);
-	int aux        = pixels / k;
+    int pixels     = bmpfilewidth(fp) * bmpfileheight(fp);
+    int aux        = pixels / k;
 
-	return pixels == aux * k;
+    return pixels == aux * k;
 }
 
 int
@@ -455,7 +356,6 @@ bmptofile(Bitmap *bp, const char *filename){
     writebmpheader(bp, fp);
     writedibheader(bp, fp);
     xfwrite(bp->palette, PALETTE_SIZE, 1, fp);
-    printf("bmpimagesize = %d\n", bmpimagesize(bp));
     xfwrite(bp->imgpixels, bmpimagesize(bp), 1, fp);
     xfclose(fp);
 }
@@ -463,7 +363,7 @@ bmptofile(Bitmap *bp, const char *filename){
 /* find closest pair of values that when multiplied, give x.
  * Used to make the shadows as 'squared' as possible*/
 void
-findclosestpair(int x, uint32_t *width, uint32_t *height){
+findclosestpair(int x, uint32_t *width, int32_t *height){
     int n = floor(sqrt(x));
 
     for(; n > 2; n--)
@@ -475,40 +375,42 @@ findclosestpair(int x, uint32_t *width, uint32_t *height){
 }
 
 Bitmap *
-newshadow(uint32_t width, uint32_t height, uint16_t seed, uint16_t shadownumber){
-	uint32_t pixelarraysize = width * height;
-	Bitmap *bmp        = xmalloc(sizeof(*bmp));
-	bmp->imgpixels     = xmalloc(pixelarraysize);
-	initpalette(bmp->palette);
+newshadow(uint32_t width, int32_t height, uint16_t seed, uint16_t shadownumber){
+    uint32_t pixelarraysize = width * height;
+    Bitmap *bmp        = xmalloc(sizeof(*bmp));
+    bmp->imgpixels     = xmalloc(pixelarraysize);
+    initpalette(bmp->palette);
 
-	bmp->bmpheader.id[0]   = 'B';
-	bmp->bmpheader.id[1]   = 'M';
-	bmp->bmpheader.size    = PIXEL_ARRAY_OFFSET + pixelarraysize;
-	bmp->bmpheader.unused1 = seed;
+    bmp->bmpheader.id[0]   = 'B';
+    bmp->bmpheader.id[1]   = 'M';
+    bmp->bmpheader.size    = PIXEL_ARRAY_OFFSET + pixelarraysize;
+    bmp->bmpheader.unused1 = seed;
     bmp->bmpheader.unused2 = shadownumber;
-	bmp->bmpheader.offset  = PIXEL_ARRAY_OFFSET;
+    bmp->bmpheader.offset  = PIXEL_ARRAY_OFFSET;
 
-	bmp->dibheader.size           = DIB_HEADER_SIZE;
-	bmp->dibheader.width          = width;
-	bmp->dibheader.height         = height;
-	bmp->dibheader.nplanes        = 1;
-	bmp->dibheader.depth          = 8;
-	bmp->dibheader.compression    = 0;
-	bmp->dibheader.pixelarraysize = pixelarraysize;
-	bmp->dibheader.hres           = 0;
-	bmp->dibheader.vres           = 0;
-	bmp->dibheader.ncolors        = 0;
-	bmp->dibheader.nimpcolors     = 0;
+    bmp->dibheader.size           = DIB_HEADER_SIZE;
+    bmp->dibheader.width          = width;
+    bmp->dibheader.height         = height;
+    bmp->dibheader.nplanes        = 1;
+    bmp->dibheader.depth          = 8;
+    bmp->dibheader.compression    = 0;
+    bmp->dibheader.pixelarraysize = pixelarraysize;
+    bmp->dibheader.hres           = 0;
+    bmp->dibheader.vres           = 0;
+    bmp->dibheader.ncolors        = 0;
+    bmp->dibheader.nimpcolors     = 0;
 
-	return bmp;
+    return bmp;
 }
 
 Bitmap **
-formshadows(Bitmap *bp, uint16_t seed, int k, int n){
-    uint8_t *coeff;
-    uint32_t width, height;
+formshadows(Bitmap *bp, uint16_t seed, uint16_t k, uint16_t n){
+    unsigned int i, j;
+    uint8_t  *coeff;
+    uint32_t width;
+    int32_t  height;
     uint16_t *pixels = xmalloc(sizeof(*pixels) * n);
-    int i, j, pixelarraysize  = bmpimagesize(bp);;
+    uint32_t pixelarraysize = bmpimagesize(bp);
     Bitmap **shadows = xmalloc(sizeof(*shadows) * n);
 
     findclosestpair(pixelarraysize/k, &width, &height);
@@ -522,7 +424,7 @@ formshadows(Bitmap *bp, uint16_t seed, int k, int n){
         coeff = &bp->imgpixels[j*k];
 
         /* Paper's 4th step, mixed with the 3rd one */
-step4:
+        step4:
         for(i = 0; i < n; i++){
             /* uses coeff[0] to coeff[k-1] (where k-1 is the degree of the
              * polynomial) to evaluate the corresponding section polynomial and
@@ -613,7 +515,7 @@ xorbmpwithrandomtable(Bitmap *bmp, int seed){
 }
 
 void
-revealsecret(Bitmap **shadows, uint16_t k, uint32_t width, uint32_t height, const char *filename){
+revealsecret(Bitmap **shadows, uint16_t k, uint32_t width, int32_t height, const char *filename){
     int i, j, t, value;
     int pixels = (*shadows)->dibheader.pixelarraysize;
     Bitmap *sp;
@@ -676,7 +578,7 @@ hideshadow(Bitmap *bp, Bitmap *shadow){
 /* width and height parameters needed because the image hiding the shadow could
  * be bigger than necessary */
 Bitmap *
-retrieveshadow(Bitmap *bp, uint32_t width, uint32_t height, uint16_t k){
+retrieveshadow(Bitmap *bp, uint32_t width, int32_t height, uint16_t k){
     uint8_t byte, mask;
     uint16_t key          = bp->bmpheader.unused1;
     uint16_t shadownumber = bp->bmpheader.unused2;
@@ -795,7 +697,7 @@ distributeimage(uint16_t k, uint16_t n, uint16_t seed, char *imgpath, char *dir)
 }
 
 void
-recoverimage(uint16_t k, uint32_t width, uint32_t height, char *filename, char *dir){
+recoverimage(uint16_t k, uint32_t width, int32_t height, char *filename, char *dir){
     char **filepaths = xmalloc(sizeof(*filepaths) * k);
     Bitmap **shadows = xmalloc(sizeof(*shadows) * k);
     Bitmap *bp;
@@ -864,7 +766,8 @@ main(int argc, char *argv[]){
     int dirflag = 0;
     int secretflag = 0;
     uint16_t seed, k, n;
-    int width, height;
+    uint32_t width;
+    int32_t height;
     int i;
 
     argv0 = argv[0]; /* save program name for usage() */

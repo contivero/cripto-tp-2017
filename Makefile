@@ -1,6 +1,6 @@
 include config.mk
 
-SRC = bmpsss.c
+SRC = bmpsss.c bmp.c bmp.h
 SRC_DIR = src
 BIN_DIR = bin
 C_FILES = $(wildcard $(SRC_DIR)/*.c)
@@ -10,7 +10,7 @@ OBJ = $(addprefix $(SRC_DIR)/obj/, $(notdir $(C_FILES:.c=.o)))
 
 $(SRC_DIR)/obj/%.o: $(SRC_DIR)/%.c
 	mkdir -p $(SRC_DIR)/obj
-	$(CC) -c -o $@ $< $(CFLAGS)
+	$(CC) -c -o $@ $^ $(CFLAGS)
 
 bmpsss: $(OBJ)
 	mkdir -p $(BIN_DIR)
@@ -24,6 +24,6 @@ options:
 clean:
 	@echo cleaning...
 	rm -f $(BIN_DIR)/*
-	rm -f -r $(SRC_DIR)/obj
+	rm -rf $(SRC_DIR)/obj
 
 .PHONY: options clean bmpsss
