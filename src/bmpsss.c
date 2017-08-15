@@ -1,6 +1,6 @@
 #include "util.h"
-#include <math.h>
 #include <limits.h>
+#include <math.h>
 #include <string.h>
 
 #define BMP_MAGIC_NUMBER       0x424D
@@ -9,18 +9,18 @@
 #define PALETTE_SIZE           1024
 #define PIXEL_ARRAY_OFFSET     (BMP_HEADER_SIZE + DIB_HEADER_SIZE + PALETTE_SIZE)
 #define UNUSED2_OFFSET         8
-#define BITS_PER_PIXEL         8
 #define WIDTH_OFFSET           18
 #define HEIGHT_OFFSET          22
-#define DEFAULT_SEED           691
+#define BITS_PER_PIXEL         8
 #define PRIME                  257
+#define DEFAULT_SEED           691
 #define RIGHTMOST_BIT_ON(x)    ((x) |= 0x01)
 #define RIGHTMOST_BIT_OFF(x)   ((x) &= 0xFE)
 
 typedef struct {
     uint8_t  id[2];    /* magic number to identify the BMP format */
     uint32_t size;     /* size of the BMP file in bytes */
-    uint16_t unused1;  /* key */
+    uint16_t unused1;  /* key (seed) */
     uint16_t unused2;  /* shadow number */
     uint32_t offset;   /* starting address of the pixel array (bitmap data) */
 } BMPheader;
@@ -62,6 +62,7 @@ static void     usage(void);
 static uint32_t get32bitsfromheader(FILE *fp, int offset);
 static uint32_t bmpfilewidth(FILE *fp);
 static uint32_t bmpfileheight(FILE *fp);
+static uint32_t bmpimagesize(Bitmap *bp);
 static void     initpalette(uint8_t palette[]);
 static Bitmap   *newbitmap(uint32_t width, int32_t height, uint16_t seed);
 static void     freebitmap(Bitmap *bp);
@@ -74,7 +75,6 @@ static void     writedibheader(Bitmap *bp, FILE *fp);
 static Bitmap   *bmpfromfile(const char *filename);
 static int      isvalidbmpsize(FILE *fp, uint16_t k, uint32_t secretsize);
 static int      kdivisiblesize(FILE *fp, uint16_t k);
-static uint32_t bmpimagesize(Bitmap *bp);
 static void     bmptofile(Bitmap *bp, const char *filename);
 static void     findclosestpair(int value, uint32_t *v1, int32_t *v2);
 static Bitmap   *newshadow(uint32_t width, int32_t height, uint16_t seed, uint16_t shadownumber);
@@ -134,19 +134,6 @@ countfiles(const char *dirname){
 }
 
 void
-usage(void){
-    die("usage: %s -(d|r) --secret image -k number -w width -h height -s seed"
-            "[-n number] [--dir directory]\n", argv0);
-}
-
-/* Calculates needed pixelarraysize, accounting for padding.
- * See: https://en.wikipedia.org/wiki/BMP_file_format#Pixel_storage */
-inline uint32_t
-pixelarraysize(uint32_t width, int32_t height){
-    return ((BITS_PER_PIXEL * width + 31)/32) * 4 * height;
-}
-
-void
 setseed(int64_t s){
     rseed = (s ^ 25214903917) & 281474976710655;
 }
@@ -157,6 +144,19 @@ nextbyte(void) {
     int n = rseed >> (48 - 31);
 
     return (int64_t)256 * (int64_t)n >> 31;
+}
+
+void
+usage(void){
+    die("usage: %s -(d|r) --secret image -k number -w width -h height -s seed"
+            "[-n number] [--dir directory]\n", argv0);
+}
+
+/* Calculates needed pixelarraysize, accounting for padding.
+ * See: https://en.wikipedia.org/wiki/BMP_file_format#Pixel_storage */
+inline uint32_t
+pixelarraysize(uint32_t width, int32_t height){
+    return ((BITS_PER_PIXEL * width + 31)/32) * 4 * height;
 }
 
 uint32_t
@@ -382,12 +382,12 @@ bmptofile(Bitmap *bp, const char *filename){
  * Used to make the shadows as 'squared' as possible */
 void
 findclosestpair(int x, uint32_t *width, int32_t *height){
-    int n = floor(sqrt(x));
+    int y = floor(sqrt(x));
 
-    for(; n > 2; n--)
-        if(x % n == 0){
-            *width  = n;
-            *height = x / n;
+    for(; y > 2; y--)
+        if(x % y == 0){
+            *width  = y;
+            *height = x / y;
             break;
         }
 }
@@ -424,12 +424,12 @@ newshadow(uint32_t width, int32_t height, uint16_t seed, uint16_t shadownumber){
 Bitmap **
 formshadows(Bitmap *bp, uint16_t seed, uint16_t k, uint16_t n){
     unsigned int i, j;
-    uint8_t  *coeff;
+    uint8_t *coeff;
     uint32_t width;
-    int32_t  height;
-    uint16_t *pixels = xmalloc(sizeof(*pixels) * n);
+    int32_t height;
     uint32_t pixelarraysize = bmpimagesize(bp);
     Bitmap **shadows = xmalloc(sizeof(*shadows) * n);
+    uint16_t *pixels = xmalloc(sizeof(*pixels) * n);
 
     findclosestpair(pixelarraysize/k, &width, &height);
 
@@ -507,29 +507,6 @@ findcoefficients(int **mat, uint16_t k){
             mat[t][i] = 0;
         }
     }
-}
-
-uint8_t *
-randomtable(uint32_t tablesize, uint16_t seed) {
-    uint8_t *table = xmalloc(tablesize * sizeof(*table));
-    setseed(seed);
-
-    if(table)
-        for(unsigned int i = 0; i < tablesize; i++)
-            table[i] = nextbyte();
-
-    return table;
-}
-
-void
-xorbmpwithrandomtable(Bitmap *bmp, uint16_t seed){
-    uint32_t imgsize = bmpimagesize(bmp);
-    uint8_t *table   = randomtable(imgsize, seed);
-
-    for(unsigned int i = 0; i < imgsize; i++)
-        bmp->imgpixels[i] ^= table[i];
-
-    free(table);
 }
 
 void
@@ -662,7 +639,7 @@ getvalidfilenames(char **filenames, char *dir, uint16_t k, uint16_t n, int (*isv
 
     while((d = readdir(dp)) && i < n){
         if(d->d_type == DT_REG){
-            snprintf(filepath, PATH_MAX + 1, "%s/%.*s", NAME_MAX, dir, d->d_name);
+            snprintf(filepath, PATH_MAX + 1, "%s/%.*s", dir, NAME_MAX, d->d_name);
             fp = xfopen(filepath, "r");
             if(isvalid(fp, k, size)){
                 filenames[i] = xmalloc(strlen(filepath) + 1);
@@ -719,7 +696,7 @@ recoverimage(uint16_t k, uint32_t width, int32_t height, char *filename, char *d
     char **filepaths = xmalloc(sizeof(*filepaths) * k);
     Bitmap **shadows = xmalloc(sizeof(*shadows) * k);
     Bitmap *bp;
-    int i;
+    unsigned int i;
 
     getshadowfilenames(filepaths, dir, k, width * height);
     for(i = 0; i < k; i++){
@@ -758,6 +735,29 @@ recoverimage(uint16_t k, uint32_t width, int32_t height, char *filename, char *d
    bp->dibheader.ncolors, bp->dibheader.nimpcolors);
    }
    */
+
+uint8_t *
+randomtable(uint32_t tablesize, uint16_t seed) {
+    uint8_t *table = xmalloc(tablesize * sizeof(*table));
+    setseed(seed);
+
+    if(table)
+        for(unsigned int i = 0; i < tablesize; i++)
+            table[i] = nextbyte();
+
+    return table;
+}
+
+void
+xorbmpwithrandomtable(Bitmap *bmp, uint16_t seed){
+    uint32_t imgsize = bmpimagesize(bmp);
+    uint8_t *table   = randomtable(imgsize, seed);
+
+    for(unsigned int i = 0; i < imgsize; i++)
+        bmp->imgpixels[i] ^= table[i];
+
+    free(table);
+}
 
 int
 main(int argc, char *argv[]){

@@ -1,4 +1,4 @@
-Simple implementation of a secret image sharing scheme, as discribed in
+Simple implementation of a secret image sharing scheme, as described in
 [Kuang-Shyr Wu, Tsung-Ming Lo. An Efficient Secret Image Sharing Scheme. Applied Mechanics and Materials Vols. 284-287 (2013) pp 3025-3029]
 
 The program hides 8-bit BMP images inside others. The 40 byte BITMAPINFOHEADER
