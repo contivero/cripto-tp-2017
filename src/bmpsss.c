@@ -16,7 +16,7 @@
 #define DEFAULT_SEED           691
 #define RIGHTMOST_BIT_ON(x)    ((x) |= 0x01)
 #define RIGHTMOST_BIT_OFF(x)   ((x) &= 0xFE)
-#define DIR_MAX                (PATH_MAX - NAME_MAX - 1)
+#define DIR_MAX                (PATH_MAX - NAME_MAX)
 
 typedef struct {
     uint8_t  id[2];   /* magic number to identify the BMP format */
@@ -183,10 +183,8 @@ bmpfileheight(FILE *fp){
 /* initialize palette with default 8-bit greyscale values */
 void
 initpalette(uint8_t palette[]){
-    unsigned int i, j;
-
-    for(i = 0; i < 256; i++){
-        j = i * 4;
+    for(uint32_t i = 0; i < 256; i++){
+        uint32_t j = i * 4;
         palette[j++] = i;
         palette[j++] = i;
         palette[j++] = i;
@@ -536,7 +534,6 @@ revealsecret(Bitmap **shadows, uint16_t k, uint32_t width, int32_t height, const
 void
 hideshadow(Bitmap *bp, Bitmap *shadow){
     unsigned int i, j;
-    uint8_t byte;
     char shadowfilename[20] = {0};
     uint32_t pixels = bmpimagesize(shadow);
 
@@ -545,7 +542,7 @@ hideshadow(Bitmap *bp, Bitmap *shadow){
     xsnprintf(shadowfilename, 20, "shadow%d.bmp", shadow->bmpheader.unused2);
 
     for(i = 0; i < pixels; i++){
-        byte = shadow->imgpixels[i];
+        uint8_t byte = shadow->imgpixels[i];
         for(j = i*8; j < 8*(i+1); j++){
             if(byte & 0x80) /* 1000 0000 */
                 RIGHTMOST_BIT_ON(bp->imgpixels[j]);
@@ -561,7 +558,6 @@ hideshadow(Bitmap *bp, Bitmap *shadow){
  * be bigger than necessary */
 Bitmap *
 retrieveshadow(Bitmap *bp, uint32_t width, int32_t height, uint16_t k){
-    uint8_t byte, mask;
     uint16_t key          = bp->bmpheader.unused1;
     uint16_t shadownumber = bp->bmpheader.unused2;
 
@@ -570,8 +566,8 @@ retrieveshadow(Bitmap *bp, uint32_t width, int32_t height, uint16_t k){
     uint32_t shadowpixels = shadow->dibheader.pixelarraysize;
 
     for(uint32_t i = 0; i < shadowpixels; i++){
-        byte = 0;
-        mask = 0x80; /* 1000 0000 */
+        uint8_t byte = 0;
+        uint8_t mask = 0x80; /* 1000 0000 */
         for(uint32_t j = i*8; j < 8*(i+1); j++){
             if(bp->imgpixels[j] & 0x01)
                 byte |= mask;
@@ -585,16 +581,14 @@ retrieveshadow(Bitmap *bp, uint32_t width, int32_t height, uint16_t k){
 
 bool
 isbmp(FILE *fp){
-    uint16_t magicnumber;
+    char magicnumber[2];
     long pos = ftell(fp);
 
     xfseek(fp, 0, SEEK_SET);
-    xfread(&magicnumber, sizeof(magicnumber), 1, fp);
-    if(!isbigendian())
-        uint16swap(&magicnumber);
+    xfread(magicnumber, sizeof(magicnumber), 1, fp);
     xfseek(fp, pos, SEEK_SET);
 
-    return magicnumber == BMP_MAGIC_NUMBER;
+    return magicnumber[0] == 'B' && magicnumber[1] == 'M';
 }
 
 bool
@@ -683,12 +677,11 @@ void
 recoverimage(uint16_t k, uint32_t width, int32_t height, char *filename, char *dir){
     char **filepaths = xmalloc(sizeof(*filepaths) * k);
     Bitmap **shadows = xmalloc(sizeof(*shadows) * k);
-    Bitmap *bp;
     unsigned int i;
 
     getshadowfilenames(filepaths, dir, k, width * height);
     for(i = 0; i < k; i++){
-        bp = bmpfromfile(filepaths[i]);
+        Bitmap *bp = bmpfromfile(filepaths[i]);
         shadows[i] = retrieveshadow(bp, width, height, k);
         freebitmap(bp);
     }
