@@ -1,3 +1,7 @@
+Kuang-Shyr Tsung-Ming Secret Sharing Scheme
+====
+[![License](https://img.shields.io/badge/License-BSD%203--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause)
+
 Simple implementation of a secret image sharing scheme, as described in
 [Kuang-Shyr Wu, Tsung-Ming Lo. An Efficient Secret Image Sharing Scheme. Applied Mechanics and Materials Vols. 284-287 (2013) pp 3025-3029]
 

@@ -38,14 +38,28 @@ xfwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream){
 		die("fwrite: error in writing or end of file.\n");
 }
 
+void
+xfseek(FILE *fp,  long offset,  int whence) {
+    if(fseek(fp, offset, whence))
+        die("fseek: error\n");
+}
+
 DIR *
 xopendir(const char *name){
 	DIR *dp = opendir(name);
 
 	if(!dp)
-		die("opendir: error\n");
+		die("xopendir: error opening %s\n", name);
 
 	return dp;
+}
+
+void
+xclosedir(DIR *dirp){
+    if(!dirp)
+        die("xclosedir: null pointer\n");
+	if(closedir(dirp))
+		die("xclosedir: error\n");
 }
 
 void *
@@ -53,12 +67,27 @@ xmalloc(size_t size){
 	void *p = malloc(size);
 
 	if(!p)
-		die("Out of memory: couldn't malloc %d bytes\n", size);
+		die("xmalloc: couldn't allocate %d bytes\n", size);
 
 	return p;
 }
 
 int
+xsnprintf(char *str, size_t size, const char *fmt, ...) {
+	va_list ap;
+
+	va_start(ap, fmt);
+	int len = vsnprintf(str, size, fmt, ap);
+	va_end(ap);
+	if (len < 0)
+		die("xsnprintf: error\n");
+	if (len >= size)
+		die("xsnprintf: snprintf buffer too small\n");
+
+	return len;
+}
+
+bool
 isbigendian(void){
 	int value = 1;
 
@@ -90,8 +119,8 @@ uint32swap(uint32_t *x){
 		 ((*x & (uint32_t) 0xFF000000U) >> 24);
 }
 
-inline int32_t
+inline void
 int32swap(int32_t *x){
-    *x = ((*x << 8) & 0xFF00FF00) | ((*x >> 8) & 0xFF00FF); 
-    return (*x << 16) | ((*x >> 16) & 0xFFFF);
+    *x = ((*x << 8) & 0xFF00FF00) | ((*x >> 8) & 0xFF00FF);
+    *x = (*x << 16) | ((*x >> 16) & 0xFFFF);
 }
