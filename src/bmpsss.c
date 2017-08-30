@@ -1,22 +1,28 @@
-#include "util.h"
+#include <dirent.h>
 #include <limits.h>
-#include <math.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <tgmath.h>
 
-#define BMP_MAGIC_NUMBER       0x424D
-#define BMP_HEADER_SIZE        14
-#define DIB_HEADER_SIZE        40
-#define PALETTE_SIZE           1024
-#define PIXEL_ARRAY_OFFSET     (BMP_HEADER_SIZE + DIB_HEADER_SIZE + PALETTE_SIZE)
-#define UNUSED2_OFFSET         8
-#define WIDTH_OFFSET           18
-#define HEIGHT_OFFSET          22
-#define BITS_PER_PIXEL         8
-#define PRIME                  257
-#define DEFAULT_SEED           691
-#define RIGHTMOST_BIT_ON(x)    ((x) |= 0x01)
-#define RIGHTMOST_BIT_OFF(x)   ((x) &= 0xFE)
-#define DIR_MAX                (PATH_MAX - NAME_MAX)
+#include "util.h"
+
+#define BMP_MAGIC_NUMBER     0x424D
+#define BMP_HEADER_SIZE      14
+#define DIB_HEADER_SIZE      40
+#define PALETTE_SIZE         1024
+#define PIXEL_ARRAY_OFFSET   (BMP_HEADER_SIZE + DIB_HEADER_SIZE + PALETTE_SIZE)
+#define UNUSED2_OFFSET       8
+#define WIDTH_OFFSET         18
+#define HEIGHT_OFFSET        22
+#define BITS_PER_PIXEL       8
+#define PRIME                257
+#define DEFAULT_SEED         691
+#define RIGHTMOST_BIT_ON(x)  ((x) |= 0x01)
+#define RIGHTMOST_BIT_OFF(x) ((x) &= 0xFE)
+#define DIR_MAX              (PATH_MAX - NAME_MAX)
 
 typedef struct {
     uint8_t  id[2];   /* magic number to identify the BMP format */
@@ -435,7 +441,7 @@ formshadows(Bitmap *bp, uint16_t seed, uint16_t k, uint16_t n){
             uint64_t value = 0;
 
             for(int r = 0; r < k; r++)
-                value += coeff[r] * powl(i+1, r);
+                value += coeff[r] * pow(i+1, r);
 
             pixels[i] = value % PRIME;
         }
