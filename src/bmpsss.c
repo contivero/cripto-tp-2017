@@ -9,7 +9,6 @@
 
 #include "util.h"
 
-#define BMP_MAGIC_NUMBER     0x424D
 #define BMP_HEADER_SIZE      14
 #define DIB_HEADER_SIZE      40
 #define PALETTE_SIZE         1024
@@ -62,7 +61,7 @@ static void     usage(void);
 static uint32_t get32bitsfromheader(FILE *fp, int offset);
 static uint32_t bmpfilewidth(FILE *fp);
 static uint32_t bmpfileheight(FILE *fp);
-static uint32_t bmpimagesize(Bitmap *bp);
+static uint32_t bmpimagesize(const Bitmap *bp);
 static void     initpalette(uint8_t palette[]);
 static Bitmap   *newbitmap(uint32_t width, int32_t height, uint16_t seed);
 static void     freebitmap(Bitmap *bp);
@@ -70,36 +69,36 @@ static Bitmap   *newbitmaphelper(uint32_t width, int32_t height, uint16_t seed, 
 static void     changeheaderendianness(BMPheader *h);
 static void     changedibendianness(DIBheader *h);
 static void     readbmpheader(Bitmap *bp, FILE *fp);
-static void     writebmpheader(Bitmap *bp, FILE *fp);
+static void     writebmpheader(const Bitmap *bp, FILE *fp);
 static void     readdibheader(Bitmap *bp, FILE *fp);
-static void     writedibheader(Bitmap *bp, FILE *fp);
+static void     writedibheader(const Bitmap *bp, FILE *fp);
 static Bitmap   *bmpfromfile(const char *filename);
 static bool     isvalidbmpsize(FILE *fp, uint16_t k, uint32_t secretsize);
 static int      kdivisiblesize(FILE *fp, uint16_t k);
-static void     bmptofile(Bitmap *bp, const char *filename);
+static void     bmptofile(const Bitmap *bp, const char *filename);
 static void     findclosestpair(int value, uint32_t *v1, int32_t *v2);
 static Bitmap   *newshadow(uint32_t width, int32_t height, uint16_t seed, uint16_t shadownumber);
-static Bitmap   **formshadows(Bitmap *bp, uint16_t seed, uint16_t k, uint16_t n);
+static Bitmap   **formshadows(const Bitmap *bp, uint16_t seed, uint16_t k, uint16_t n);
 static void     findcoefficients(int **mat, uint16_t k);
 static void     revealsecret(Bitmap **shadows, uint16_t k, uint32_t width, int32_t height, const char *filename);
-static void     hideshadow(Bitmap *bp, Bitmap *shadow);
-static Bitmap   *retrieveshadow(Bitmap *bp, uint32_t width, int32_t height, uint16_t k);
+static void     hideshadow(Bitmap *bp, const Bitmap *shadow);
+static Bitmap   *retrieveshadow(const Bitmap *bp, uint32_t width, int32_t height, uint16_t k);
 static bool     isbmp(FILE *fp);
 static bool     isvalidshadow(FILE *fp, uint16_t k, uint32_t size);
 static bool     isvalidbmp(FILE *fp, uint16_t k, uint32_t ignored);
-static void     getvalidfilenames(char **filenames, char *dir, uint16_t k, uint16_t n, bool (*isvalid)(FILE *, uint16_t, uint32_t), uint32_t);
+static void     getvalidfilenames(char **filenames, const char *dir, uint16_t k, uint16_t n, bool (*isvalid)(FILE *, uint16_t, uint32_t), uint32_t);
 static void     getbmpfilenames(char **filenames, char *dir, uint16_t k, uint16_t n, uint32_t size);
-static void     getshadowfilenames(char **filenames, char *dir, uint16_t k, uint32_t size);
+static void     getshadowfilenames(char **filenames, const char *dir, uint16_t k, uint32_t size);
 static void     distributeimage(uint16_t k, uint16_t n, uint16_t seed, char *imgpath, char *dir);
-static void     recoverimage(uint16_t k, uint32_t width, int32_t height, char *filename, char *dir);
+static void     recoverimage(uint16_t k, uint32_t width, int32_t height, const char *filename, const char *dir);
 static uint32_t calculatepixelarraysize(uint32_t width, int32_t height);
 static void     decreasecoeff(uint8_t *coeff);
 static uint8_t  *randomtable(uint32_t tablesize, uint16_t seed);
 static void     xorbmpwithrandomtable(Bitmap *bmp, uint16_t seed);
 
 /* globals */
-static char *argv0;                /* program name for usage() */
-static int64_t rseed;              /* seed to use for the random table */
+static char      *argv0;           /* program name for usage() */
+static int64_t   rseed;            /* seed to use for the random table */
 static const int modinv[PRIME] = { /* modular multiplicative inverses */
     0, 1, 129, 86, 193, 103, 43, 147, 225, 200, 180, 187, 150, 178, 202, 120,
     241, 121, 100, 230, 90, 49, 222, 190, 75, 72, 89, 238, 101, 195, 60, 199,
@@ -139,7 +138,7 @@ countfiles(const char *dirname){
  * See: https://docs.oracle.com/javase/8/docs/api/java/util/Random.html#setSeed-long-
  */
 void
-setseed(int64_t s){
+setseed(int64_t s) {
     rseed = (s ^ 25214903917) & 281474976710655;
 }
 
@@ -194,7 +193,7 @@ initpalette(uint8_t palette[]){
         palette[j++] = i;
         palette[j++] = i;
         palette[j++] = i;
-        palette[j] = 0;
+        palette[j]   = 0;
     }
 }
 
@@ -202,9 +201,7 @@ initpalette(uint8_t palette[]){
 Bitmap *
 newbitmap(uint32_t width, int32_t height, uint16_t seed){
     uint32_t pixelarraysize = calculatepixelarraysize(width, height);
-    Bitmap *bmp = newbitmaphelper(width, height, seed, 0, pixelarraysize);
-
-    return bmp;
+    return newbitmaphelper(width, height, seed, 0, pixelarraysize);
 }
 
 /* Helper function to build a BMP, used by newbitmap() and newshadow() */
@@ -282,7 +279,7 @@ readbmpheader(Bitmap *bp, FILE *fp){
 }
 
 void
-writebmpheader(Bitmap *bp, FILE *fp){
+writebmpheader(const Bitmap *bp, FILE *fp){
     BMPheader h = bp->bmpheader;
 
     if(isbigendian())
@@ -316,7 +313,7 @@ readdibheader(Bitmap *bp, FILE *fp){
 }
 
 void
-writedibheader(Bitmap *bp, FILE *fp){
+writedibheader(const Bitmap *bp, FILE *fp){
     DIBheader h = bp->dibheader;
 
     if(isbigendian())
@@ -370,7 +367,7 @@ kdivisiblesize(FILE *fp, uint16_t k){
 }
 
 uint32_t
-bmpimagesize(Bitmap *bp){
+bmpimagesize(const Bitmap *bp){
     uint32_t sz = bp->bmpheader.size;
 
     if(sz == 0)
@@ -380,7 +377,7 @@ bmpimagesize(Bitmap *bp){
 }
 
 void
-bmptofile(Bitmap *bp, const char *filename){
+bmptofile(const Bitmap *bp, const char *filename){
     FILE *fp = xfopen(filename, "w");
 
     writebmpheader(bp, fp);
@@ -413,7 +410,7 @@ newshadow(uint32_t width, int32_t height, uint16_t seed, uint16_t shadownumber){
 }
 
 Bitmap **
-formshadows(Bitmap *bp, uint16_t seed, uint16_t k, uint16_t n){
+formshadows(const Bitmap *bp, uint16_t seed, uint16_t k, uint16_t n){
     unsigned int i, j;
     uint8_t *coeff;
     uint32_t width;
@@ -462,7 +459,7 @@ formshadows(Bitmap *bp, uint16_t seed, uint16_t k, uint16_t n){
 }
 
 /* decrease the first non-zero coefficient by one */
-void
+inline void
 decreasecoeff(uint8_t *coeff){
     int i = 0;
 
@@ -538,7 +535,7 @@ revealsecret(Bitmap **shadows, uint16_t k, uint32_t width, int32_t height, const
 }
 
 void
-hideshadow(Bitmap *bp, Bitmap *shadow){
+hideshadow(Bitmap *bp, const Bitmap *shadow){
     unsigned int i, j;
     char shadowfilename[20] = {0};
     uint32_t pixels = bmpimagesize(shadow);
@@ -563,7 +560,7 @@ hideshadow(Bitmap *bp, Bitmap *shadow){
 /* width and height parameters needed because the image hiding the shadow could
  * be bigger than necessary */
 Bitmap *
-retrieveshadow(Bitmap *bp, uint32_t width, int32_t height, uint16_t k){
+retrieveshadow(const Bitmap *bp, uint32_t width, int32_t height, uint16_t k){
     uint16_t key          = bp->bmpheader.unused1;
     uint16_t shadownumber = bp->bmpheader.unused2;
 
@@ -617,7 +614,7 @@ isvalidbmp(FILE *fp, uint16_t k, uint32_t ignoredparameter){
 }
 
 void
-getvalidfilenames(char **filenames, char *dir, uint16_t k, uint16_t n, bool (*isvalid)(FILE *, uint16_t, uint32_t), uint32_t size){
+getvalidfilenames(char **filenames, const char *dir, uint16_t k, uint16_t n, bool (*isvalid)(FILE *, uint16_t, uint32_t), uint32_t size){
     struct dirent *d;
     FILE *fp;
     DIR *dp = xopendir(dir);
@@ -649,7 +646,7 @@ getbmpfilenames(char **filenames, char *dir, uint16_t k, uint16_t n, uint32_t si
 }
 
 void
-getshadowfilenames(char **filenames, char *dir, uint16_t k, uint32_t size){
+getshadowfilenames(char **filenames, const char *dir, uint16_t k, uint32_t size){
     getvalidfilenames(filenames, dir, k, k, isvalidshadow, size);
 }
 
@@ -680,7 +677,7 @@ distributeimage(uint16_t k, uint16_t n, uint16_t seed, char *imgpath, char *dir)
 }
 
 void
-recoverimage(uint16_t k, uint32_t width, int32_t height, char *filename, char *dir){
+recoverimage(uint16_t k, uint32_t width, int32_t height, const char *filename, const char *dir){
     char **filepaths = xmalloc(sizeof(*filepaths) * k);
     Bitmap **shadows = xmalloc(sizeof(*shadows) * k);
     unsigned int i;
