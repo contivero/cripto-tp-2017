@@ -53,6 +53,8 @@ typedef struct {
     uint8_t   *imgpixels;            /* array of bytes representing each pixel */
 } Bitmap;
 
+typedef bool (*validating_fn)(FILE *, uint16_t, uint32_t);
+
 /* prototypes */
 static void     setseed(int64_t s);
 static int      nextbyte(void);
@@ -62,7 +64,7 @@ static uint32_t get32bitsfromheader(FILE *fp, int offset);
 static uint32_t bmpfilewidth(FILE *fp);
 static uint32_t bmpfileheight(FILE *fp);
 static uint32_t bmpimagesize(const Bitmap *bp);
-static void     initpalette(uint8_t palette[]);
+static void     initpalette(uint8_t palette[static PALETTE_SIZE]);
 static Bitmap   *newbitmap(uint32_t width, int32_t height, uint16_t seed);
 static void     freebitmap(Bitmap *bp);
 static Bitmap   *newbitmaphelper(uint32_t width, int32_t height, uint16_t seed, uint16_t shadnum, uint32_t pixelarraysize);
@@ -74,23 +76,23 @@ static void     readdibheader(Bitmap *bp, FILE *fp);
 static void     writedibheader(const Bitmap *bp, FILE *fp);
 static Bitmap   *bmpfromfile(const char *filename);
 static bool     isvalidbmpsize(FILE *fp, uint16_t k, uint32_t secretsize);
-static int      kdivisiblesize(FILE *fp, uint16_t k);
+static bool     kdivisiblesize(FILE *fp, uint16_t k);
 static void     bmptofile(const Bitmap *bp, const char *filename);
-static void     findclosestpair(int value, uint32_t *v1, int32_t *v2);
+static void     findclosestpair(int value, uint32_t *w, int32_t *h);
 static Bitmap   *newshadow(uint32_t width, int32_t height, uint16_t seed, uint16_t shadownumber);
-static Bitmap   **formshadows(const Bitmap *bp, uint16_t seed, uint16_t k, uint16_t n);
+static Bitmap   **formshadows(const Bitmap *bp, uint16_t k, uint16_t n, uint16_t seed);
 static void     findcoefficients(int **mat, uint16_t k);
-static void     revealsecret(Bitmap **shadows, uint16_t k, uint32_t width, int32_t height, const char *filename);
+static Bitmap   *revealsecret(Bitmap **shadows, uint32_t width, int32_t height, uint16_t k);
 static void     hideshadow(Bitmap *bp, const Bitmap *shadow);
 static Bitmap   *retrieveshadow(const Bitmap *bp, uint32_t width, int32_t height, uint16_t k);
 static bool     isbmp(FILE *fp);
 static bool     isvalidshadow(FILE *fp, uint16_t k, uint32_t size);
 static bool     isvalidbmp(FILE *fp, uint16_t k, uint32_t ignored);
-static void     getvalidfilenames(char **filenames, const char *dir, uint16_t k, uint16_t n, bool (*isvalid)(FILE *, uint16_t, uint32_t), uint32_t);
-static void     getbmpfilenames(char **filenames, char *dir, uint16_t k, uint16_t n, uint32_t size);
-static void     getshadowfilenames(char **filenames, const char *dir, uint16_t k, uint32_t size);
-static void     distributeimage(uint16_t k, uint16_t n, uint16_t seed, char *imgpath, char *dir);
-static void     recoverimage(uint16_t k, uint32_t width, int32_t height, const char *filename, const char *dir);
+static char     **getvalidfilenames(const char *dir, uint16_t k, uint16_t n, validating_fn f, uint32_t);
+static char     **getbmpfilenames(const char *dir, uint16_t k, uint16_t n, uint32_t size);
+static char     **getshadowfilenames(const char *dir, uint16_t k, uint32_t size);
+static void     distributeimage(const char *dir, const char *imgpath, uint16_t k, uint16_t n, uint16_t seed);
+static void     recoverimage(const char *dir, const char *filename, uint32_t width, int32_t height, uint16_t k);
 static uint32_t calculatepixelarraysize(uint32_t width, int32_t height);
 static void     decreasecoeff(uint8_t *coeff);
 static uint8_t  *randomtable(uint32_t tablesize, uint16_t seed);
@@ -119,13 +121,13 @@ static const int modinv[PRIME] = { /* modular multiplicative inverses */
 };
 
 int
-countfiles(const char *dirname){
+countfiles(const char *dirname) {
     struct dirent *d;
     int filecount = 0;
     DIR *dp = xopendir(dirname);
 
-    while((d = readdir(dp)))
-        if(d->d_type == DT_REG) /* If the entry is a regular file */
+    while ((d = readdir(dp)))
+        if (d->d_type == DT_REG) /* If the entry is a regular file */
             filecount++;
     xclosedir(dp);
 
@@ -139,19 +141,19 @@ countfiles(const char *dirname){
  */
 void
 setseed(int64_t s) {
-    rseed = (s ^ 25214903917) & 281474976710655;
+    rseed = (s ^ 25214903917LL) & 281474976710655LL;
 }
 
 int
 nextbyte(void) {
-    rseed = (rseed * 25214903917 + 11) & 281474976710655;
-    int n = rseed >> (48 - 31);
+    rseed     = (rseed * 25214903917LL + 11LL) & 281474976710655LL;
+    int64_t n = rseed >> (48 - 31);
 
-    return (int64_t)256 * (int64_t)n >> 31;
+    return 256LL * n >> 31;
 }
 
 void
-usage(void){
+usage(void) {
     die("usage: %s -(d|r) --secret image -k number -w width -h height -s seed"
             "[-n number] [--dir directory]\n", argv0);
 }
@@ -159,12 +161,12 @@ usage(void){
 /* Calculates needed pixelarraysize, accounting for padding.
  * See: https://en.wikipedia.org/wiki/BMP_file_format#Pixel_storage */
 inline uint32_t
-calculatepixelarraysize(uint32_t width, int32_t height){
+calculatepixelarraysize(uint32_t width, int32_t height) {
     return ((BITS_PER_PIXEL * width + 31)/32) * 4 * height;
 }
 
 uint32_t
-get32bitsfromheader(FILE *fp, int offset){
+get32bitsfromheader(FILE *fp, int offset) {
     uint32_t value;
     long pos = ftell(fp);
 
@@ -176,20 +178,21 @@ get32bitsfromheader(FILE *fp, int offset){
 }
 
 uint32_t
-bmpfilewidth(FILE *fp){
+bmpfilewidth(FILE *fp) {
     return get32bitsfromheader(fp, WIDTH_OFFSET);
 }
 
 uint32_t
-bmpfileheight(FILE *fp){
+bmpfileheight(FILE *fp) {
     return get32bitsfromheader(fp, HEIGHT_OFFSET);
 }
 
 /* initialize palette with default 8-bit greyscale values */
 void
-initpalette(uint8_t palette[]){
-    for(uint32_t i = 0; i < 256; i++){
+initpalette(uint8_t palette[static PALETTE_SIZE]) {
+    for (uint32_t i = 0; i < 256; i++) {
         uint32_t j = i * 4;
+
         palette[j++] = i;
         palette[j++] = i;
         palette[j++] = i;
@@ -199,50 +202,54 @@ initpalette(uint8_t palette[]){
 
 /* If no seed is needed, just pass 0 */
 Bitmap *
-newbitmap(uint32_t width, int32_t height, uint16_t seed){
+newbitmap(uint32_t width, int32_t height, uint16_t seed) {
     uint32_t pixelarraysize = calculatepixelarraysize(width, height);
     return newbitmaphelper(width, height, seed, 0, pixelarraysize);
 }
 
 /* Helper function to build a BMP, used by newbitmap() and newshadow() */
 Bitmap*
-newbitmaphelper(uint32_t width, int32_t height, uint16_t seed, uint16_t shadnum, uint32_t pixelarraysize){
+newbitmaphelper(uint32_t width, int32_t height, uint16_t seed, uint16_t shadnum, uint32_t pixelarraysize) {
     Bitmap *bmp = xmalloc(sizeof(*bmp));
 
     bmp->imgpixels = xmalloc(pixelarraysize);
     initpalette(bmp->palette);
 
-    bmp->bmpheader.id[0]   = 'B';
-    bmp->bmpheader.id[1]   = 'M';
-    bmp->bmpheader.size    = PIXEL_ARRAY_OFFSET + pixelarraysize;
-    bmp->bmpheader.unused1 = seed;
-    bmp->bmpheader.unused2 = shadnum;
-    bmp->bmpheader.offset  = PIXEL_ARRAY_OFFSET;
+    bmp->bmpheader = (BMPheader)
+        { .id[0]   = 'B'
+        , .id[1]   = 'M'
+        , .size    = PIXEL_ARRAY_OFFSET + pixelarraysize
+        , .unused1 = seed
+        , .unused2 = shadnum
+        , .offset  = PIXEL_ARRAY_OFFSET
+        };
 
-    bmp->dibheader.size           = DIB_HEADER_SIZE;
-    bmp->dibheader.width          = width;
-    bmp->dibheader.height         = height;
-    bmp->dibheader.nplanes        = 1;
-    bmp->dibheader.depth          = BITS_PER_PIXEL;
-    bmp->dibheader.compression    = 0;
-    bmp->dibheader.pixelarraysize = pixelarraysize;
-    bmp->dibheader.hres           = 0;
-    bmp->dibheader.vres           = 0;
-    bmp->dibheader.ncolors        = 0;
-    bmp->dibheader.nimpcolors     = 0;
+    bmp->dibheader = (DIBheader)
+        { .size           = DIB_HEADER_SIZE
+        , .width          = width
+        , .height         = height
+        , .nplanes        = 1
+        , .depth          = BITS_PER_PIXEL
+        , .compression    = 0
+        , .pixelarraysize = pixelarraysize
+        , .hres           = 0
+        , .vres           = 0
+        , .ncolors        = 0
+        , .nimpcolors     = 0
+        };
 
     return bmp;
 
 }
 
 void
-freebitmap(Bitmap *bp){
+freebitmap(Bitmap *bp) {
     free(bp->imgpixels);
     free(bp);
 }
 
 void
-changeheaderendianness(BMPheader *h){
+changeheaderendianness(BMPheader *h) {
     uint32swap(&h->size);
     uint16swap(&h->unused1);
     uint16swap(&h->unused2);
@@ -250,7 +257,7 @@ changeheaderendianness(BMPheader *h){
 }
 
 void
-changedibendianness(DIBheader *h){
+changedibendianness(DIBheader *h) {
     uint32swap(&h->size);
     uint32swap(&h->width);
     int32swap(&h->height);
@@ -265,7 +272,7 @@ changedibendianness(DIBheader *h){
 }
 
 void
-readbmpheader(Bitmap *bp, FILE *fp){
+readbmpheader(Bitmap *bp, FILE *fp) {
     BMPheader *h = &bp->bmpheader;
 
     xfread(h->id, sizeof(h->id), 1, fp);
@@ -274,15 +281,15 @@ readbmpheader(Bitmap *bp, FILE *fp){
     xfread(&h->unused2, sizeof(h->unused2), 1, fp);
     xfread(&h->offset, sizeof(h->offset), 1, fp);
 
-    if(isbigendian())
+    if (isbigendian())
         changeheaderendianness(&bp->bmpheader);
 }
 
 void
-writebmpheader(const Bitmap *bp, FILE *fp){
+writebmpheader(const Bitmap *bp, FILE *fp) {
     BMPheader h = bp->bmpheader;
 
-    if(isbigendian())
+    if (isbigendian())
         changeheaderendianness(&h);
 
     xfwrite(h.id, sizeof(h.id), 1, fp);
@@ -293,7 +300,7 @@ writebmpheader(const Bitmap *bp, FILE *fp){
 }
 
 void
-readdibheader(Bitmap *bp, FILE *fp){
+readdibheader(Bitmap *bp, FILE *fp) {
     DIBheader *h = &bp->dibheader;
 
     xfread(&h->size, sizeof(h->size), 1, fp);
@@ -308,15 +315,15 @@ readdibheader(Bitmap *bp, FILE *fp){
     xfread(&h->ncolors, sizeof(h->ncolors), 1, fp);
     xfread(&h->nimpcolors, sizeof(h->nimpcolors), 1, fp);
 
-    if(isbigendian())
+    if (isbigendian())
         changedibendianness(&bp->dibheader);
 }
 
 void
-writedibheader(const Bitmap *bp, FILE *fp){
+writedibheader(const Bitmap *bp, FILE *fp) {
     DIBheader h = bp->dibheader;
 
-    if(isbigendian())
+    if (isbigendian())
         changedibendianness(&h);
 
     xfwrite(&(h.size), sizeof(h.size), 1, fp);
@@ -333,7 +340,7 @@ writedibheader(const Bitmap *bp, FILE *fp){
 }
 
 Bitmap *
-bmpfromfile(const char *filename){
+bmpfromfile(const char *filename) {
     FILE *fp = xfopen(filename, "r");
     Bitmap *bp = xmalloc(sizeof(*bp));
 
@@ -351,15 +358,15 @@ bmpfromfile(const char *filename){
 }
 
 bool
-isvalidbmpsize(FILE *fp, uint16_t k, uint32_t secretsize){
+isvalidbmpsize(FILE *fp, uint16_t k, uint32_t secretsize) {
     uint32_t shadowsize = (secretsize * 8)/k;
     uint32_t imgsize    = bmpfilewidth(fp) * bmpfileheight(fp);
 
     return imgsize >= shadowsize;
 }
 
-int
-kdivisiblesize(FILE *fp, uint16_t k){
+bool
+kdivisiblesize(FILE *fp, uint16_t k) {
     int pixels = bmpfilewidth(fp) * bmpfileheight(fp);
     int aux    = pixels / k;
 
@@ -367,17 +374,17 @@ kdivisiblesize(FILE *fp, uint16_t k){
 }
 
 uint32_t
-bmpimagesize(const Bitmap *bp){
+bmpimagesize(const Bitmap *bp) {
     uint32_t sz = bp->bmpheader.size;
 
-    if(sz == 0)
-        return bp->dibheader.pixelarraysize;
-    else
+    if (sz > 0)
         return bp->bmpheader.size - bp->bmpheader.offset;
+
+    return bp->dibheader.pixelarraysize;
 }
 
 void
-bmptofile(const Bitmap *bp, const char *filename){
+bmptofile(const Bitmap *bp, const char *filename) {
     FILE *fp = xfopen(filename, "w");
 
     writebmpheader(bp, fp);
@@ -390,11 +397,11 @@ bmptofile(const Bitmap *bp, const char *filename){
 /* find closest pair of values that when multiplied, give x.
  * Used to make the shadows as 'squared' as possible */
 void
-findclosestpair(int x, uint32_t *width, int32_t *height){
+findclosestpair(int x, uint32_t *width, int32_t *height) {
     int y = floor(sqrt(x));
 
-    for(; y > 2; y--)
-        if(x % y == 0){
+    for (; y > 2; y--)
+        if (x % y == 0) {
             *width  = y;
             *height = x / y;
             break;
@@ -402,16 +409,12 @@ findclosestpair(int x, uint32_t *width, int32_t *height){
 }
 
 Bitmap *
-newshadow(uint32_t width, int32_t height, uint16_t seed, uint16_t shadownumber){
-    Bitmap *bmp = newbitmaphelper(width, height, seed, shadownumber, width * height);
-    bmp->bmpheader.unused2 = shadownumber;
-
-    return bmp;
+newshadow(uint32_t width, int32_t height, uint16_t seed, uint16_t shadownumber) {
+    return newbitmaphelper(width, height, seed, shadownumber, width * height);
 }
 
 Bitmap **
-formshadows(const Bitmap *bp, uint16_t seed, uint16_t k, uint16_t n){
-    unsigned int i, j;
+formshadows(const Bitmap *bp, uint16_t k, uint16_t n, uint16_t seed) {
     uint8_t *coeff;
     uint32_t width;
     int32_t height;
@@ -422,35 +425,35 @@ formshadows(const Bitmap *bp, uint16_t seed, uint16_t k, uint16_t n){
     findclosestpair(pixelarraysize/k, &width, &height);
 
     /* allocate shadows */
-    for(i = 0; i < n; i++)
+    for (size_t i = 0; i < n; i++)
         shadows[i] = newshadow(width, height, seed, i+1);
 
     /* generate shadow image pixels */
-    for(j = 0; j*k < pixelarraysize; j++){
+    for (size_t j = 0; j*k < pixelarraysize; j++) {
         coeff = &bp->imgpixels[j*k];
 
         /* Paper's 4th step, mixed with the 3rd one */
         step4:
-        for(i = 0; i < n; i++){
+        for (size_t i = 0; i < n; i++) {
             /* uses coeff[0] to coeff[k-1] (where k-1 is the degree of the
              * polynomial) to evaluate the corresponding section polynomial and
              * generate a pixel for the i-th shadow image */
             uint64_t value = 0;
 
-            for(int r = 0; r < k; r++)
+            for (size_t r = 0; r < k; r++)
                 value += coeff[r] * pow(i+1, r);
 
             pixels[i] = value % PRIME;
         }
 
-        for(i = 0; i < n; i++){
-            if(pixels[i] == 256){
+        for (size_t i = 0; i < n; i++) {
+            if (pixels[i] == 256) {
                 decreasecoeff(coeff);
                 goto step4;
             }
         }
 
-        for(i = 0; i < n; i++)
+        for (size_t i = 0; i < n; i++)
             shadows[i]->imgpixels[j] = pixels[i];
     }
     free(pixels);
@@ -460,25 +463,25 @@ formshadows(const Bitmap *bp, uint16_t seed, uint16_t k, uint16_t n){
 
 /* decrease the first non-zero coefficient by one */
 inline void
-decreasecoeff(uint8_t *coeff){
+decreasecoeff(uint8_t *coeff) {
     int i = 0;
 
     /* We can assume some value is 0, as it is proved in the paper */
-    while(coeff[i] == 0)
+    while (coeff[i] == 0)
         i++;
 
     coeff[i]--;
 }
 
 void
-findcoefficients(int **mat, uint16_t k){
+findcoefficients(int **mat, uint16_t k) {
     int i, j, t, a, temp;
 
     /* take matrix to echelon form */
-    for(j = 0; j < k-1; j++){
-        for(i = k-1; i > j; i--){
+    for (j = 0; j < k-1; j++) {
+        for (i = k-1; i > j; i--) {
             a = mat[i][j] * modinv[mat[i-1][j]];
-            for(t = j; t < k+1; t++){
+            for (t = j; t < k+1; t++) {
                 temp = mat[i][t] - ((mat[i-1][t] * a) % PRIME);
                 mat[i][t] = mod(temp, PRIME);
             }
@@ -486,10 +489,10 @@ findcoefficients(int **mat, uint16_t k){
     }
 
     /* take matrix to reduced row echelon form */
-    for(i = k-1; i > 0; i--){
+    for (i = k-1; i > 0; i--) {
         mat[i][k] = (mat[i][k] * modinv[mat[i][i]]) % PRIME;
         mat[i][i] = (mat[i][i] * modinv[mat[i][i]]) % PRIME;
-        for(t = i-1; t >= 0; t--){
+        for (t = i-1; t >= 0; t--) {
             temp = mat[t][k] - ((mat[i][k] * mat[t][i]) % PRIME);
             mat[t][k] = mod(temp, PRIME);
             mat[t][i] = 0;
@@ -497,46 +500,43 @@ findcoefficients(int **mat, uint16_t k){
     }
 }
 
-void
-revealsecret(Bitmap **shadows, uint16_t k, uint32_t width, int32_t height, const char *filename){
-    int i, j, t, value;
-    int pixels = (*shadows)->dibheader.pixelarraysize;
-    Bitmap *sp;
+Bitmap *
+revealsecret(Bitmap **shadows, uint32_t width, int32_t height, uint16_t k) {
+    uint32_t pixels = (*shadows)->dibheader.pixelarraysize;
     Bitmap *bmp = newbitmap(width, height, (*shadows)->bmpheader.unused1);
 
     int **mat = xmalloc(sizeof(*mat) * k);
-    for(i = 0; i < k; i++)
+    for (size_t i = 0; i < k; i++)
         mat[i] = xmalloc(sizeof(**mat) * (k+1));
 
-    for(i = 0; i < pixels; i++){
-        for(j = 0; j < k; j++){
-            sp = shadows[j];
-            value = sp->bmpheader.unused2;
+    for (size_t i = 0; i < pixels; i++) {
+        for (size_t j = 0; j < k; j++) {
+            Bitmap *sp = shadows[j];
+            int value = sp->bmpheader.unused2;
             mat[j][0] = 1;
-            for(t = 1; t < k; t++){
+            for (size_t t = 1; t < k; t++) {
                 mat[j][t] = value;
                 value *= sp->bmpheader.unused2;
             }
             mat[j][k] = sp->imgpixels[i];
         }
         findcoefficients(mat, k);
-        for(j = i * k; j < (i+1) * k; j++){
+        for (size_t j = i * k; j < (i+1) * k; j++) {
             bmp->imgpixels[j] = mat[j % k][k];
         }
     }
 
     xorbmpwithrandomtable(bmp, (*shadows)->bmpheader.unused1);
-    bmptofile(bmp, filename);
 
-    for(i = 0; i < k; i++)
+    for (size_t i = 0; i < k; i++)
         free(mat[i]);
     free(mat);
-    freebitmap(bmp);
+
+    return bmp;
 }
 
 void
-hideshadow(Bitmap *bp, const Bitmap *shadow){
-    unsigned int i, j;
+hideshadow(Bitmap *bp, const Bitmap *shadow) {
     char shadowfilename[20] = {0};
     uint32_t pixels = bmpimagesize(shadow);
 
@@ -544,10 +544,10 @@ hideshadow(Bitmap *bp, const Bitmap *shadow){
     bp->bmpheader.unused2 = shadow->bmpheader.unused2;
     xsnprintf(shadowfilename, 20, "shadow%d.bmp", shadow->bmpheader.unused2);
 
-    for(i = 0; i < pixels; i++){
+    for (size_t i = 0; i < pixels; i++) {
         uint8_t byte = shadow->imgpixels[i];
-        for(j = i*8; j < 8*(i+1); j++){
-            if(byte & 0x80) /* 1000 0000 */
+        for (size_t j = i*8; j < 8*(i+1); j++) {
+            if (byte & 0x80) /* 1000 0000 */
                 RIGHTMOST_BIT_ON(bp->imgpixels[j]);
             else
                 RIGHTMOST_BIT_OFF(bp->imgpixels[j]);
@@ -560,7 +560,7 @@ hideshadow(Bitmap *bp, const Bitmap *shadow){
 /* width and height parameters needed because the image hiding the shadow could
  * be bigger than necessary */
 Bitmap *
-retrieveshadow(const Bitmap *bp, uint32_t width, int32_t height, uint16_t k){
+retrieveshadow(const Bitmap *bp, uint32_t width, int32_t height, uint16_t k) {
     uint16_t key          = bp->bmpheader.unused1;
     uint16_t shadownumber = bp->bmpheader.unused2;
 
@@ -568,11 +568,11 @@ retrieveshadow(const Bitmap *bp, uint32_t width, int32_t height, uint16_t k){
     Bitmap *shadow = newshadow(width, height, key, shadownumber);
     uint32_t shadowpixels = shadow->dibheader.pixelarraysize;
 
-    for(uint32_t i = 0; i < shadowpixels; i++){
+    for (uint32_t i = 0; i < shadowpixels; i++) {
         uint8_t byte = 0;
         uint8_t mask = 0x80; /* 1000 0000 */
-        for(uint32_t j = i*8; j < 8*(i+1); j++){
-            if(bp->imgpixels[j] & 0x01)
+        for (uint32_t j = i*8; j < 8*(i+1); j++) {
+            if (bp->imgpixels[j] & 0x01)
                 byte |= mask;
             mask >>= 1;
         }
@@ -583,7 +583,7 @@ retrieveshadow(const Bitmap *bp, uint32_t width, int32_t height, uint16_t k){
 }
 
 bool
-isbmp(FILE *fp){
+isbmp(FILE *fp) {
     char magicnumber[2];
     long pos = ftell(fp);
 
@@ -595,7 +595,7 @@ isbmp(FILE *fp){
 }
 
 bool
-isvalidshadow(FILE *fp, uint16_t k, uint32_t secretsize){
+isvalidshadow(FILE *fp, uint16_t k, uint32_t secretsize) {
     uint16_t shadownumber;
     long pos = ftell(fp);
 
@@ -609,23 +609,24 @@ isvalidshadow(FILE *fp, uint16_t k, uint32_t secretsize){
 /* the last parameter is ignored, and is only present so that the function
  * prototype can be used with getvalidfilenames() */
 bool
-isvalidbmp(FILE *fp, uint16_t k, uint32_t ignoredparameter){
+isvalidbmp(FILE *fp, uint16_t k, uint32_t ignoredparameter) {
     return isbmp(fp) && kdivisiblesize(fp, k);
 }
 
-void
-getvalidfilenames(char **filenames, const char *dir, uint16_t k, uint16_t n, bool (*isvalid)(FILE *, uint16_t, uint32_t), uint32_t size){
+char **
+getvalidfilenames(const char *dir, uint16_t k, uint16_t n, validating_fn isvalid, uint32_t size) {
     struct dirent *d;
     FILE *fp;
     DIR *dp = xopendir(dir);
     int i = 0;
     char filepath[PATH_MAX] = {0};
+    char **filenames = xmalloc(sizeof(*filenames) * n);
 
-    while((d = readdir(dp)) && i < n){
-        if(d->d_type == DT_REG){
+    while ((d = readdir(dp)) && i < n) {
+        if (d->d_type == DT_REG) {
             int len = xsnprintf(filepath, PATH_MAX, "%.*s/%.*s", DIR_MAX, dir, NAME_MAX, d->d_name);
             fp = xfopen(filepath, "r");
-            if(isvalid(fp, k, size)){
+            if (isvalid(fp, k, size)) {
                 filenames[i] = xmalloc(len + 1);
                 strncpy(filenames[i], filepath, len);
                 filenames[i][len] = '\0'; /* NULL terminate string */
@@ -636,39 +637,40 @@ getvalidfilenames(char **filenames, const char *dir, uint16_t k, uint16_t n, boo
     }
     xclosedir(dp);
 
-    if(i < n)
+    if (i < n)
         die("not enough valid bmps for a (%d,%d) threshold scheme in dir %s\n", k, n, dir);
+
+    return filenames;
+}
+
+char **
+getbmpfilenames(const char *dir, uint16_t k, uint16_t n, uint32_t size) {
+    return getvalidfilenames(dir, k, n, isvalidbmp, size);
+}
+
+char **
+getshadowfilenames(const char *dir, uint16_t k, uint32_t size) {
+    return getvalidfilenames(dir, k, k, isvalidshadow, size);
 }
 
 void
-getbmpfilenames(char **filenames, char *dir, uint16_t k, uint16_t n, uint32_t size){
-    getvalidfilenames(filenames, dir, k, n, isvalidbmp, size);
-}
-
-void
-getshadowfilenames(char **filenames, const char *dir, uint16_t k, uint32_t size){
-    getvalidfilenames(filenames, dir, k, k, isvalidshadow, size);
-}
-
-void
-distributeimage(uint16_t k, uint16_t n, uint16_t seed, char *imgpath, char *dir){
-    char **filepaths = xmalloc(sizeof(*filepaths) * n);
+distributeimage(const char *dir, const char *imgpath, uint16_t k, uint16_t n, uint16_t seed) {
     Bitmap *bmp, **shadows;
     int i;
 
     bmp = bmpfromfile(imgpath);
-    getbmpfilenames(filepaths, dir, k, n, bmpimagesize(bmp));
+    char ** filepaths = getbmpfilenames(dir, k, n, bmpimagesize(bmp));
     xorbmpwithrandomtable(bmp, seed);
-    shadows = formshadows(bmp, seed, k, n);
+    shadows = formshadows(bmp, k, n, seed);
     freebitmap(bmp);
 
-    for(i = 0; i < n; i++){
+    for (i = 0; i < n; i++) {
         bmp = bmpfromfile(filepaths[i]);
         hideshadow(bmp, shadows[i]);
         freebitmap(bmp);
     }
 
-    for(i = 0; i < n; i++){
+    for (i = 0; i < n; i++) {
         free(filepaths[i]);
         freebitmap(shadows[i]);
     }
@@ -677,21 +679,21 @@ distributeimage(uint16_t k, uint16_t n, uint16_t seed, char *imgpath, char *dir)
 }
 
 void
-recoverimage(uint16_t k, uint32_t width, int32_t height, const char *filename, const char *dir){
-    char **filepaths = xmalloc(sizeof(*filepaths) * k);
+recoverimage(const char *dir, const char *filename, uint32_t width, int32_t height, uint16_t k) {
     Bitmap **shadows = xmalloc(sizeof(*shadows) * k);
-    unsigned int i;
 
-    getshadowfilenames(filepaths, dir, k, width * height);
-    for(i = 0; i < k; i++){
+    char **filepaths = getshadowfilenames(dir, k, width * height);
+    for (size_t i = 0; i < k; i++) {
         Bitmap *bp = bmpfromfile(filepaths[i]);
         shadows[i] = retrieveshadow(bp, width, height, k);
         freebitmap(bp);
     }
 
-    revealsecret(shadows, k, width, height, filename);
+    Bitmap *bmp = revealsecret(shadows, width, height, k);
+    bmptofile(bmp, filename);
+    freebitmap(bmp);
 
-    for(i = 0; i < k; i++){
+    for (size_t i = 0; i < k; i++) {
         free(filepaths[i]);
         freebitmap(shadows[i]);
     }
@@ -704,26 +706,26 @@ randomtable(uint32_t tablesize, uint16_t seed) {
     uint8_t *table = xmalloc(tablesize * sizeof(*table));
     setseed(seed);
 
-    if(table)
-        for(unsigned int i = 0; i < tablesize; i++)
+    if (table)
+        for (size_t i = 0; i < tablesize; i++)
             table[i] = nextbyte();
 
     return table;
 }
 
 void
-xorbmpwithrandomtable(Bitmap *bmp, uint16_t seed){
+xorbmpwithrandomtable(Bitmap *bmp, uint16_t seed) {
     uint32_t imgsize = bmpimagesize(bmp);
     uint8_t *table   = randomtable(imgsize, seed);
 
-    for(unsigned int i = 0; i < imgsize; i++)
+    for (size_t i = 0; i < imgsize; i++)
         bmp->imgpixels[i] ^= table[i];
 
     free(table);
 }
 
 int
-main(int argc, char *argv[]){
+main(int argc, char *argv[argc + 1]) {
     char *filename = NULL;
     char *dir = "./";
     int dflag = 0;
@@ -741,54 +743,54 @@ main(int argc, char *argv[]){
 
     argv0 = argv[0]; /* save program name for usage() */
 
-    for(i = 1; i < argc; i++){
-        if(strcmp(argv[i], "-d") == 0){
+    for (i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-d") == 0) {
             dflag = 1;
-        } else if(strcmp(argv[i], "-r") == 0) {
+        } else if (strcmp(argv[i], "-r") == 0) {
             rflag = 1;
-        } else if(strcmp(argv[i], "--secret") == 0){
+        } else if (strcmp(argv[i], "--secret") == 0) {
             secretflag = 1;
-            if(i + 1 < argc){
+            if (i + 1 < argc) {
                 filename = argv[++i];
             } else {
                 usage();
             }
-        } else if(strcmp(argv[i], "-k") == 0){
+        } else if (strcmp(argv[i], "-k") == 0) {
             kflag = 1;
-            if(i + 1 < argc){
+            if (i + 1 < argc) {
                 k = atoi(argv[++i]);
             } else {
                 usage();
             }
-        } else if(strcmp(argv[i], "-w") == 0){
+        } else if (strcmp(argv[i], "-w") == 0) {
             wflag = 1;
-            if(i + 1 < argc){
+            if (i + 1 < argc) {
                 width = atoi(argv[++i]);
             } else {
                 usage();
             }
-        } else if(strcmp(argv[i], "-h") == 0){
+        } else if (strcmp(argv[i], "-h") == 0) {
             hflag = 1;
-            if(i + 1 < argc){
+            if (i + 1 < argc) {
                 height = atoi(argv[++i]);
             } else {
                 usage();
             }
-        } else if(strcmp(argv[i], "-s") == 0) {
-            if(i + 1 < argc){
+        } else if (strcmp(argv[i], "-s") == 0) {
+            if (i + 1 < argc) {
                 seed = atoi(argv[++i]);
             } else {
                 usage();
             }
-        } else if(strcmp(argv[i], "-n") == 0){
+        } else if (strcmp(argv[i], "-n") == 0) {
             nflag = 1;
-            if(i + 1 < argc){
+            if (i + 1 < argc) {
                 n = atoi(argv[++i]);
             } else {
                 usage();
             }
-        } else if(strcmp(argv[i], "--dir") == 0){
-            if(i + 1 < argc){
+        } else if (strcmp(argv[i], "--dir") == 0) {
+            if (i + 1 < argc) {
                 dir = argv[++i];
             } else{
                 usage();
@@ -798,23 +800,23 @@ main(int argc, char *argv[]){
         }
     }
 
-    if(!(dflag || rflag) || !secretflag || !kflag)
+    if (!(dflag || rflag) || !secretflag || !kflag)
         usage();
-    if((rflag && !(wflag && hflag)) || !width || !height)
+    if ((rflag && !(wflag && hflag)) || !width || !height)
         die("specify a positive width and height with -w -h for the revealed image\n");
 
-    if(!nflag)
+    if (!nflag)
         n = countfiles(dir);
 
-    if(k > n || k < 2 || n < 2)
+    if (k > n || k < 2 || n < 2)
         die("k and n must be: 2 <= k <= n\n");
-    if(dflag && rflag)
+    if (dflag && rflag)
         die("can't use -d and -r flags simultaneously\n");
 
-    if(dflag)
-        distributeimage(k, n, seed, filename, dir);
-    else if(rflag)
-        recoverimage(k, width, height, filename, dir);
+    if (dflag)
+        distributeimage(dir, filename, k, n, seed);
+    else if (rflag)
+        recoverimage(dir, filename, width, height, k);
 
     return EXIT_SUCCESS;
 }
