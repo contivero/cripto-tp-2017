@@ -53,7 +53,7 @@ typedef struct {
     uint8_t   *imgpixels;            /* array of bytes representing each pixel */
 } Bitmap;
 
-typedef bool (*validating_fn)(FILE *, uint16_t, uint32_t);
+typedef bool (*fn)(FILE *, uint16_t, uint32_t);
 
 /* prototypes */
 static void     setseed(int64_t s);
@@ -78,7 +78,7 @@ static Bitmap   *bmpfromfile(const char *filename);
 static bool     isvalidbmpsize(FILE *fp, uint16_t k, uint32_t secretsize);
 static bool     kdivisiblesize(FILE *fp, uint16_t k);
 static void     bmptofile(const Bitmap *bp, const char *filename);
-static void     findclosestpair(int value, uint32_t *w, int32_t *h);
+static void     findclosestpair(int x, uint32_t *width, int32_t *height);
 static Bitmap   *newshadow(uint32_t width, int32_t height, uint16_t seed, uint16_t shadownumber);
 static Bitmap   **formshadows(const Bitmap *bp, uint16_t k, uint16_t n, uint16_t seed);
 static void     findcoefficients(int **mat, uint16_t k);
@@ -86,9 +86,9 @@ static Bitmap   *revealsecret(Bitmap **shadows, uint32_t width, int32_t height, 
 static void     hideshadow(Bitmap *bp, const Bitmap *shadow);
 static Bitmap   *retrieveshadow(const Bitmap *bp, uint32_t width, int32_t height, uint16_t k);
 static bool     isbmp(FILE *fp);
-static bool     isvalidshadow(FILE *fp, uint16_t k, uint32_t size);
-static bool     isvalidbmp(FILE *fp, uint16_t k, uint32_t ignored);
-static char     **getvalidfilenames(const char *dir, uint16_t k, uint16_t n, validating_fn f, uint32_t);
+static bool     isvalidshadow(FILE *fp, uint16_t k, uint32_t secretsize);
+static bool     isvalidbmp(FILE *fp, uint16_t k, uint32_t ignoredparameter);
+static char     **getvalidfilenames(const char *dir, uint16_t k, uint16_t n, fn isvalid, uint32_t size);
 static char     **getbmpfilenames(const char *dir, uint16_t k, uint16_t n, uint32_t size);
 static char     **getshadowfilenames(const char *dir, uint16_t k, uint32_t size);
 static void     distributeimage(const char *dir, const char *imgpath, uint16_t k, uint16_t n, uint16_t seed);
@@ -99,9 +99,9 @@ static uint8_t  *randomtable(uint32_t tablesize, uint16_t seed);
 static void     xorbmpwithrandomtable(Bitmap *bmp, uint16_t seed);
 
 /* globals */
-static char      *argv0;           /* program name for usage() */
-static int64_t   rseed;            /* seed to use for the random table */
-static const int modinv[PRIME] = { /* modular multiplicative inverses */
+static const char *argv0;           /* program name for usage() */
+static int64_t    rseed;            /* seed to use for the random table */
+static const int  modinv[PRIME] = { /* modular multiplicative inverses */
     0, 1, 129, 86, 193, 103, 43, 147, 225, 200, 180, 187, 150, 178, 202, 120,
     241, 121, 100, 230, 90, 49, 222, 190, 75, 72, 89, 238, 101, 195, 60, 199,
     249, 148, 189, 235, 50, 132, 115, 145, 45, 163, 153, 6, 111, 40, 95, 175,
@@ -126,9 +126,10 @@ countfiles(const char *dirname) {
     int filecount = 0;
     DIR *dp = xopendir(dirname);
 
-    while ((d = readdir(dp)))
+    while ((d = readdir(dp))) {
         if (d->d_type == DT_REG) /* If the entry is a regular file */
             filecount++;
+    }
     xclosedir(dp);
 
     return filecount;
@@ -415,7 +416,6 @@ newshadow(uint32_t width, int32_t height, uint16_t seed, uint16_t shadownumber) 
 
 Bitmap **
 formshadows(const Bitmap *bp, uint16_t k, uint16_t n, uint16_t seed) {
-    uint8_t *coeff;
     uint32_t width;
     int32_t height;
     uint32_t pixelarraysize = bmpimagesize(bp);
@@ -430,7 +430,7 @@ formshadows(const Bitmap *bp, uint16_t k, uint16_t n, uint16_t seed) {
 
     /* generate shadow image pixels */
     for (size_t j = 0; j*k < pixelarraysize; j++) {
-        coeff = &bp->imgpixels[j*k];
+        uint8_t *coeff = &bp->imgpixels[j*k];
 
         /* Paper's 4th step, mixed with the 3rd one */
         step4:
@@ -614,7 +614,7 @@ isvalidbmp(FILE *fp, uint16_t k, uint32_t ignoredparameter) {
 }
 
 char **
-getvalidfilenames(const char *dir, uint16_t k, uint16_t n, validating_fn isvalid, uint32_t size) {
+getvalidfilenames(const char *dir, uint16_t k, uint16_t n, fn isvalid, uint32_t size) {
     struct dirent *d;
     FILE *fp;
     DIR *dp = xopendir(dir);
@@ -624,10 +624,10 @@ getvalidfilenames(const char *dir, uint16_t k, uint16_t n, validating_fn isvalid
 
     while ((d = readdir(dp)) && i < n) {
         if (d->d_type == DT_REG) {
-            int len = xsnprintf(filepath, PATH_MAX, "%.*s/%.*s", DIR_MAX, dir, NAME_MAX, d->d_name);
+            size_t len = xsnprintf(filepath, PATH_MAX, "%.*s/%.*s", DIR_MAX, dir, NAME_MAX, d->d_name);
             fp = xfopen(filepath, "r");
             if (isvalid(fp, k, size)) {
-                filenames[i] = xmalloc(len + 1);
+                filenames[i] = xmalloc(len + 1UL);
                 strncpy(filenames[i], filepath, len);
                 filenames[i][len] = '\0'; /* NULL terminate string */
                 i++;
@@ -656,7 +656,6 @@ getshadowfilenames(const char *dir, uint16_t k, uint32_t size) {
 void
 distributeimage(const char *dir, const char *imgpath, uint16_t k, uint16_t n, uint16_t seed) {
     Bitmap *bmp, **shadows;
-    int i;
 
     bmp = bmpfromfile(imgpath);
     char ** filepaths = getbmpfilenames(dir, k, n, bmpimagesize(bmp));
@@ -664,13 +663,13 @@ distributeimage(const char *dir, const char *imgpath, uint16_t k, uint16_t n, ui
     shadows = formshadows(bmp, k, n, seed);
     freebitmap(bmp);
 
-    for (i = 0; i < n; i++) {
+    for (size_t i = 0; i < n; i++) {
         bmp = bmpfromfile(filepaths[i]);
         hideshadow(bmp, shadows[i]);
         freebitmap(bmp);
     }
 
-    for (i = 0; i < n; i++) {
+    for (size_t i = 0; i < n; i++) {
         free(filepaths[i]);
         freebitmap(shadows[i]);
     }
@@ -728,22 +727,23 @@ int
 main(int argc, char *argv[argc + 1]) {
     char *filename = NULL;
     char *dir = "./";
-    int dflag = 0;
-    int rflag = 0;
-    int kflag = 0;
-    int wflag = 0;
-    int hflag = 0;
-    int nflag = 0;
-    int secretflag = 0;
+    char *endptr;
+    bool dflag = 0;
+    bool rflag = 0;
+    bool kflag = 0;
+    bool wflag = 0;
+    bool hflag = 0;
+    bool nflag = 0;
+    bool secretflag = 0;
     uint16_t seed = DEFAULT_SEED;
-    uint16_t k = 0, n = 0;
+    uint16_t k = 0;
+    uint16_t n = 0;
     uint32_t width = 0;
     int32_t height = 0;
-    int i;
 
     argv0 = argv[0]; /* save program name for usage() */
 
-    for (i = 1; i < argc; i++) {
+    for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-d") == 0) {
             dflag = 1;
         } else if (strcmp(argv[i], "-r") == 0) {
@@ -758,34 +758,54 @@ main(int argc, char *argv[argc + 1]) {
         } else if (strcmp(argv[i], "-k") == 0) {
             kflag = 1;
             if (i + 1 < argc) {
-                k = atoi(argv[++i]);
+                long int l = xstrtol(argv[++i], &endptr, 10);
+                if (l <= UINT16_MAX)
+                    k = l;
+                else
+                    die("k must be 2 <= k <= %d; was %d", UINT16_MAX, l);
             } else {
                 usage();
             }
         } else if (strcmp(argv[i], "-w") == 0) {
             wflag = 1;
             if (i + 1 < argc) {
-                width = atoi(argv[++i]);
+                long int l = xstrtol(argv[++i], &endptr, 10);
+                if (l <= UINT32_MAX)
+                    width = l;
+                else
+                    die("width must be less or equal to %d; was %d", UINT32_MAX, l);
             } else {
                 usage();
             }
         } else if (strcmp(argv[i], "-h") == 0) {
             hflag = 1;
             if (i + 1 < argc) {
-                height = atoi(argv[++i]);
+                long int l = xstrtol(argv[++i], &endptr, 10);
+                if (INT32_MIN <= l && l <= INT32_MAX)
+                    height = l;
+                else
+                    die("height must be %d <= height <= %d; was %d", INT32_MIN, INT32_MAX, l);
             } else {
                 usage();
             }
         } else if (strcmp(argv[i], "-s") == 0) {
             if (i + 1 < argc) {
-                seed = atoi(argv[++i]);
+                long int l = xstrtol(argv[++i], &endptr, 10);
+                if (l <= UINT16_MAX)
+                    seed = l;
+                else
+                    die("seed must be less or equal to %d; was %d", UINT16_MAX, l);
             } else {
                 usage();
             }
         } else if (strcmp(argv[i], "-n") == 0) {
             nflag = 1;
             if (i + 1 < argc) {
-                n = atoi(argv[++i]);
+                long int l = xstrtol(argv[++i], &endptr, 10);
+                if (l <= UINT16_MAX)
+                    n = l;
+                else
+                    die("n must be 2 <= n <= 65535; was %d", l);
             } else {
                 usage();
             }
