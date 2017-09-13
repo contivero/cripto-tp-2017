@@ -78,7 +78,7 @@ static Bitmap   *bmpfromfile(const char *filename);
 static bool     isvalidbmpsize(FILE *fp, uint16_t k, uint32_t secretsize);
 static bool     kdivisiblesize(FILE *fp, uint16_t k);
 static void     bmptofile(const Bitmap *bp, const char *filename);
-static void     findclosestpair(int x, uint32_t *width, int32_t *height);
+static void     findclosestpair(uint32_t x, uint32_t *width, int32_t *height);
 static Bitmap   *newshadow(uint32_t width, int32_t height, uint16_t seed, uint16_t shadownumber);
 static Bitmap   **formshadows(const Bitmap *bp, uint16_t k, uint16_t n, uint16_t seed);
 static void     findcoefficients(int **mat, uint16_t k);
@@ -398,8 +398,8 @@ bmptofile(const Bitmap *bp, const char *filename) {
 /* find closest pair of values that when multiplied, give x.
  * Used to make the shadows as 'squared' as possible */
 void
-findclosestpair(int x, uint32_t *width, int32_t *height) {
-    int y = floor(sqrt(x));
+findclosestpair(uint32_t x, uint32_t *width, int32_t *height) {
+    unsigned int y = floor(sqrt(x));
 
     for (; y > 2; y--)
         if (x % y == 0) {
@@ -478,22 +478,22 @@ findcoefficients(int **mat, uint16_t k) {
     int i, j, t, a, temp;
 
     /* take matrix to echelon form */
-    for (j = 0; j < k-1; j++) {
-        for (i = k-1; i > j; i--) {
-            a = mat[i][j] * modinv[mat[i-1][j]];
-            for (t = j; t < k+1; t++) {
-                temp = mat[i][t] - ((mat[i-1][t] * a) % PRIME);
+    for (size_t j = 0; j < k-1; j++) {
+        for (size_t i = k-1; i > j; i--) {
+            int a = mat[i][j] * modinv[mat[i-1][j]];
+            for (size_t t = j; t < k+1; t++) {
+                int temp = mat[i][t] - ((mat[i-1][t] * a) % PRIME);
                 mat[i][t] = mod(temp, PRIME);
             }
         }
     }
 
     /* take matrix to reduced row echelon form */
-    for (i = k-1; i > 0; i--) {
+    for (size_t i = k-1; i > 0; i--) {
         mat[i][k] = (mat[i][k] * modinv[mat[i][i]]) % PRIME;
         mat[i][i] = (mat[i][i] * modinv[mat[i][i]]) % PRIME;
-        for (t = i-1; t >= 0; t--) {
-            temp = mat[t][k] - ((mat[i][k] * mat[t][i]) % PRIME);
+        for (int t = i-1; t >= 0; t--) {
+            int temp = mat[t][k] - ((mat[i][k] * mat[t][i]) % PRIME);
             mat[t][k] = mod(temp, PRIME);
             mat[t][i] = 0;
         }
@@ -618,7 +618,7 @@ getvalidfilenames(const char *dir, uint16_t k, uint16_t n, fn isvalid, uint32_t 
     struct dirent *d;
     FILE *fp;
     DIR *dp = xopendir(dir);
-    int i = 0;
+    size_t i = 0;
     char filepath[PATH_MAX] = {0};
     char **filenames = xmalloc(sizeof(*filenames) * n);
 
@@ -725,25 +725,25 @@ xorbmpwithrandomtable(Bitmap *bmp, uint16_t seed) {
 
 int
 main(int argc, char *argv[argc + 1]) {
-    char *filename = NULL;
-    char *dir = "./";
-    char *endptr;
-    bool dflag = 0;
-    bool rflag = 0;
-    bool kflag = 0;
-    bool wflag = 0;
-    bool hflag = 0;
-    bool nflag = 0;
+    bool dflag      = 0;
+    bool rflag      = 0;
+    bool kflag      = 0;
+    bool wflag      = 0;
+    bool hflag      = 0;
+    bool nflag      = 0;
     bool secretflag = 0;
-    uint16_t seed = DEFAULT_SEED;
-    uint16_t k = 0;
-    uint16_t n = 0;
-    uint32_t width = 0;
-    int32_t height = 0;
+    uint16_t seed   = DEFAULT_SEED;
+    uint16_t k      = 0;
+    uint16_t n      = 0;
+    uint32_t width  = 0;
+    int32_t height  = 0;
+    char *filename  = 0;
+    char *dir       = "./";
+    char *endptr;
 
     argv0 = argv[0]; /* save program name for usage() */
 
-    for (int i = 1; i < argc; i++) {
+    for (size_t i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-d") == 0) {
             dflag = 1;
         } else if (strcmp(argv[i], "-r") == 0) {

@@ -1,5 +1,4 @@
-void die(const char *errstr, ...);
-
+void     die(const char *errstr, ...);
 void     xfclose(FILE *fp);
 FILE     *xfopen(const char *filename, const char *mode);
 void     xfread(void *ptr, size_t size, size_t nmemb, FILE *stream);

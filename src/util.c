@@ -154,4 +154,3 @@ xstrtol(const char *nptr, char **end, int base){
 
     return sl;
 }
-
